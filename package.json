@@ -1,0 +1,6 @@
+{
+  "name": "inkwave-godot-demo-source",
+  "private": true,
+  "type": "module",
+  "scripts": { "check": "sh godot-port-prototype/tools/run_checks.sh" }
+}
