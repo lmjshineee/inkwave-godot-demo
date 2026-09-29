@@ -12,6 +12,12 @@ func _capture() -> void:
 	if not _save("/private/tmp/inkwave-setup.png"):
 		quit(1)
 		return
+	scene.call("_open_settings")
+	await RenderingServer.frame_post_draw
+	if not _save("/private/tmp/inkwave-settings.png"):
+		quit(1)
+		return
+	scene.get("settings_panel").call("close_panel")
 	scene.call("_start_round")
 	await RenderingServer.frame_post_draw
 	if not _save("/private/tmp/inkwave-playing.png"):
@@ -31,7 +37,7 @@ func _capture() -> void:
 	if not _save("/private/tmp/inkwave-combat.png"):
 		quit(1)
 		return
-	print("PASS: setup, playing and combat frames saved")
+	print("PASS: setup, settings, playing and combat frames saved")
 	quit()
 
 

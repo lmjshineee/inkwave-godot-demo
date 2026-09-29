@@ -1,9 +1,9 @@
 # INKWAVE：Godot 特性选型与迁移规范
 
-状态：2026-09-27。当前目录是可丢弃的 Godot 样机，**不是**网页游戏的等价实现。本文是后续代码评审与验收的约定；提到的目标能力不表示已经完成。当前迁移顺序是 **真实地图规则闭环 → 画面与素材 → 完整对局 → Mac 导出**。默认入口已是 `tidewater_play.tscn`；没有完整图形试玩证据。
+状态：2026-09-29。当前目录是可丢弃的 Godot 样机，**不是**网页游戏的等价实现。本文是后续代码评审与验收的约定；提到的目标能力不表示已经完成。当前迁移顺序是 **真实地图规则闭环 → 画面与素材 → 完整对局 → Mac 导出**。默认入口已是 `tidewater_play.tscn`；没有完整图形试玩证据。
 
 本目录已纳入 Git（基线提交 `6ea0bef` 只做入库、未改内容），迁移批次在独立分支上做；批次记录见 §6。
-验证的唯一入口是 [tools/run_checks.sh](tools/run_checks.sh)：素材导入 → 4 个导出器 `--check` → 23 个规则短测，任一失败即非 0 退出。**"已迁移"必须附该脚本的通过输出**，不接受只跑单个脚本或只看退出码。
+验证的唯一入口是 [tools/run_checks.sh](tools/run_checks.sh)：素材导入 → 4 个导出器 `--check` → 全部 `check_*.gd` 规则短测，任一失败即非 0 退出。**"已迁移"必须附该脚本的通过输出**，不接受只跑单个脚本或只看退出码。
 渲染路线已决定为 Forward+ 但**尚未执行**，见 §2「渲染路线决策」。
 
 ## 执行摘要：本 Demo 实际要用什么
@@ -13,7 +13,7 @@
 | 当前核心 | `PackedScene` / `Node3D`、`StaticBody3D`、`CharacterBody3D`、物理射线 | Tidewater 地图、玩家移动、武器命中 | 默认场景能加载；坡道/墙面碰撞与命中点能定位同一 `face_id`；规则短测与短时画面验收分别记录 |
 | 当前核心 | `PackedByteArray`、`Image` / `ImageTexture` | 每个可涂面的归属格和惰性创建的墨迹显示 | 重复涂、敌方覆盖、墙面不计分正确；关闭显示层后覆盖率仍一致；记录纹理上传次数和帧时间 |
 | 当前核心 | `_physics_process`、`CanvasLayer` / `Control` | 固定步长移动与战斗、选武器卡片、HUD 和结算 | 赛前/重生可换武器，存活期间不可换；真实地图完成一局并正确冻结计分 |
-| 下一批 | `InputMap`、独立的玩家/机器人场景、音频节点 | 可改键输入、复用生命规则、命中/阶段音效 | 鼠标键盘操作不再散落在对局控制器；机器人遵守同一伤害与重生入口；声音可单独静音 |
+| 当前与下一批 | `InputMap`、独立的玩家/机器人场景、音频节点 | 默认真实地图的键鼠动作已接入 `InputMap`，运行时改键短测通过；设置界面与键位持久化待做 | 鼠标键盘操作不再散落在对局控制器；机器人遵守同一伤害与重生入口；声音可单独静音 |
 | 条件采用 | `NavigationAgent3D`、`.tres`、`Decal` / `Trail3D` | 需要动态绕障、编辑器共享参数或短时视觉特效时 | 与现有固定路线/JSON/简单特效比较，证明目标行为或帧时间收益后再接入 |
 | 暂不采用 | `DrawableTexture2D`、4.8 新渲染功能、`MultiplayerAPI` | GPU 墨迹实验与联机均独立立项 | 不得替换 CPU 权威计分；单机 Demo 验收不依赖这些功能 |
 
@@ -24,15 +24,15 @@
 - 本目录已在 Git 管理下（`godot-port-prototype/`，`.godot/` 与 `build/` 已忽略）。改动前先确认工作区干净；迁移批次用独立分支，并在提交信息里写清"改了什么规则、依据哪个源文件行、跑了什么验证"。
 - 当前本机为 **Godot 4.8.dev6**，`project.godot` 已写入 `4.8` 特性标记。4.8 仍是预览版；每次换引擎版本前，先把 `project.godot`、场景、脚本和资源纳入 Git 或保存独立快照，再执行导入。`.godot/` 是生成缓存，不作为源码提交。[4.8 dev6 发布说明](https://godotengine.org/article/dev-snapshot-godot-4-8-dev-6/)
 - 一个迁移批次只使用一个明确记录的 Godot 版本。若要回到稳定版，先在独立副本恢复对应版本的项目文件，再重新导入资源；不把 4.8 编辑后的唯一副本直接交给旧版继续编辑。跨越 4.7 时核对[官方 4.6→4.7 迁移清单](https://docs.godotengine.org/en/4.7/tutorials/migrating/upgrading_to_godot_4.7.html)。
-- 保留网页游戏为行为基准。Godot 默认场景现为 Tidewater 地图、90 秒、1v1；旧平地样机可用 `run.sh --flat` 启动。网页配置的默认对局是 **180 秒、每队 5 人**，另有 90 秒选项。迁移每项规则时注明“与网页一致”或“样机简化”。依据：[config.js](../public/game/src/config.js)、[match.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/match.js)。
+- 保留网页游戏为行为基准。Godot 默认场景现为 Tidewater 地图、90 秒、1v1；旧平地样机可用 `run.sh --flat` 启动。网页配置的默认对局是 **180 秒、每队 5 人**，另有 90 秒选项。迁移每项规则时注明“与网页一致”或“样机简化”。依据：[config.js](../public/game/src/config.js)、[match.js](../public/game/src/game/match.js)。
 
 ## 2. 值得用的 Godot 特性
 
 | 特性 | 在 INKWAVE 中的用途 | 采用条件 |
 | --- | --- | --- |
 | `SceneTree`、`Node3D`、独立场景 | 地图、角色、武器表现、HUD 分场景；对局状态由单独控制器管理 | 已有独立 [地图场景](tidewater_map.tscn)、[步行场](tidewater_walk.tscn)和默认[对局场景](tidewater_play.tscn)；后续把输入/HUD 从 `tidewater_play.gd` 拆出，避免继续扩大单个脚本 |
-| `CharacterBody3D`、`StaticBody3D`、`CollisionShape3D`、射线查询 | 地图碰撞、坡道行走、跳跃、墙面接触与命中后定位可涂面 | 地图碰撞、水平加减速/转向、跳跃缓冲/离地宽限、低矮潜墨体积和基础己方墨墙攀爬已有短测；台阶/落地细节和完整攀爬手感尚未移植。参考 [CharacterBody3D](https://docs.godotengine.org/en/4.7/classes/class_characterbody3d.html) |
-| `InputMap` 动作 | 将移动、潜墨、射击、跳跃和选武器从硬编码键位抽离，便于键盘与手柄共用 | 拆分当前对局控制器的输入读取时一起迁；动作名使用 `snake_case`，保留现有键鼠默认操作。[官方输入示例](https://docs.godotengine.org/en/4.7/tutorials/inputs/input_examples.html) |
+| `CharacterBody3D`、`StaticBody3D`、`CollisionShape3D`、射线查询 | 地图碰撞、坡道行走、跳跃、墙面接触与命中后定位可涂面 | 地图碰撞、水平加减速/转向、跳跃缓冲/离地宽限、低矮潜墨体积和基础己方墨墙攀爬已有短测；0.35 m 台阶、下台阶、临边足迹和硬着陆短暂减速已有短测；落地与攀爬手感仍待图形验收。参考 [CharacterBody3D](https://docs.godotengine.org/en/4.7/classes/class_characterbody3d.html) |
+| `InputMap` 动作 | 默认真实地图已将移动、潜墨、射击、跳跃和选武器从硬编码键位抽离 | `iw_*` 动作保留现有键鼠操作并通过运行时改键短测；旧平地样机仍用原键位，设置界面与自定义键位持久化待做。[官方输入示例](https://docs.godotengine.org/en/4.7/tutorials/inputs/input_examples.html) |
 | `Resource` / `.tres` 数据 | 武器参数、地图描述、队伍配色等可编辑配置 | 多场景复用时使用；保留 `config.js` 中稳定的武器 ID 和单位，不在节点脚本中各存一份参数 |
 | `PackedByteArray` + `Image` / `ImageTexture` + `StandardMaterial3D` | 每表面 CPU 归属格负责规则；材质和纹理只显示归属结果 | [真实地图实验场](tidewater_play.tscn)已用 [多表面归属格](surface_ink.gd)驱动 [ImageTexture 显示层](surface_ink_view.gd)和计分。显示资源在首次涂墨时创建，最多 285 张独立纹理；长期帧成本未测，不能视为最终渲染方案 |
 | `DrawableTexture2D` | 将来试验纹理绘制和减少整张纹理上传 | 只做隔离实验：该绘制 API 仍标为实验性，且 GPU 画面不能替代 CPU 的归属与得分数据。[官方类文档](https://docs.godotengine.org/en/4.7/classes/class_drawabletexture2d.html) |
@@ -43,16 +43,16 @@
 
 4.8 的纹理流送面向较多大纹理；当前是少量 SVG 图标、平地样机的一张动态纹理，以及真实地图的多张小墨迹纹理，暂不启用。接触阴影同样不属于当前无光照样机的瓶颈。[dev5](https://godotengine.org/article/dev-snapshot-godot-4-8-dev-5/)、[dev6](https://godotengine.org/article/dev-snapshot-godot-4-8-dev-6/)
 
-**当前优先使用**：`CharacterBody3D`/静态碰撞、固定步长、CPU 归属格、`ImageTexture`、独立场景和 `Control`。**需要时再用**：`InputMap`（替换目前的直接键位读取）、`.tres`（需要编辑器中共享调参时）、导航和音频。**隔离实验**：`DrawableTexture2D`、贴花、`Trail3D` 与 4.8 新渲染能力；先证明画质或帧时间收益，再接入正式场景。`project.godot` 目前仍是 GL Compatibility，但 **正式路线已定为 Forward+（尚未执行）**，见本节末尾「渲染路线决策」。在切换完成前，任何新视觉能力都必须先确认当前 Compatibility 支持，不能按 Forward+ 的效果推断。
+**当前优先使用**：`CharacterBody3D`/静态碰撞、固定步长、CPU 归属格、`ImageTexture`、`InputMap`、独立场景和 `Control`。**需要时再用**：`.tres`（需要编辑器中共享调参时）、导航和音频。**隔离实验**：`DrawableTexture2D`、贴花、`Trail3D` 与 4.8 新渲染能力；先证明画质或帧时间收益，再接入正式场景。`project.godot` 目前仍是 GL Compatibility，但 **正式路线已定为 Forward+（尚未执行）**，见本节末尾「渲染路线决策」。在切换完成前，任何新视觉能力都必须先确认当前 Compatibility 支持，不能按 Forward+ 的效果推断。
 
 ### 本项目的数据与场景接口
 
 | 原网页模块 | Godot 中的对应物 | 当前状态与下一步 |
 | --- | --- | --- |
 | [maps.js](../public/game/src/world/maps.js) + [level.js](../public/game/src/world/level.js) | `tools/export_tidewater_map.mjs` → `assets/maps/tidewater.json` → [tidewater_map.tscn](tidewater_map.tscn) | 63 个结构块、10 个坡道、两个出生点及碰撞已短测；地图已接入默认对局场景，画面和完整对局未验收 |
-| `Level._buildFaces` + [paint.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/world/paint.js) | `tools/export_tidewater_surfaces.mjs` → `assets/maps/tidewater_surfaces.json` → [surface_ink.gd](surface_ink.gd) + [surface_ink_view.gd](surface_ink_view.gd) | 289 个表面、285 个可涂面、61 个计分面与 **69,366 个有效计分格**；归属、覆盖、重涂、拉伸墨形与逐面纹理同步已短测，墨迹图形未试玩 |
-| [actor.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/actor.js) + [physics.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/physics.js) | [tidewater_walker.gd](tidewater_walker.gd) + [tidewater_play.gd](tidewater_play.gd) → 后续正式玩家场景 | 已短测落地、坡道、水平运动、跳跃窗口、低矮潜墨碰撞体与安全站立、己方墨墙攀爬、敌墨伤害上限/延迟回血/重生保护及简化死亡重生；仍需台阶/落地细节和原作伤害反应，临时机器人尚未采用同一生命规则 |
-| [weapons.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/weapons.js) + [config.js](../public/game/src/config.js) | `tools/export_weapon_config.mjs` → `assets/weapons.json` → [tidewater_combat.gd](tidewater_combat.gd) | 四主武器、炸弹及冲击波/墨雨使用源码参数；选武器、墨耗、命中/涂墨、炸弹、大招充能及两类大招的核心事件已有无界面短测；完整弹道、命中判定、动画与特效待迁 |
+| `Level._buildFaces` + [paint.js](../public/game/src/world/paint.js) | `tools/export_tidewater_surfaces.mjs` → `assets/maps/tidewater_surfaces.json` → [surface_ink.gd](surface_ink.gd) + [surface_ink_view.gd](surface_ink_view.gd) | 289 个表面、285 个可涂面、61 个计分面与 **69,366 个有效计分格**；归属、覆盖、重涂、拉伸墨形与逐面纹理同步已短测，墨迹图形未试玩 |
+| [actor.js](../public/game/src/game/actor.js) + [physics.js](../public/game/src/game/physics.js) | [tidewater_walker.gd](tidewater_walker.gd) + [tidewater_play.gd](tidewater_play.gd) → 后续正式玩家场景 | 已短测落地、坡道、水平运动、跳跃窗口、低矮潜墨碰撞体与安全站立、己方墨墙攀爬、敌墨伤害上限/延迟回血/重生保护及简化死亡重生；0.35 m 台阶/下台阶/临边足迹、硬着陆恢复权重和蓝队基础生命规则已有短测；仍需原作落地/伤害表现与图形手感验收 |
+| [weapons.js](../public/game/src/game/weapons.js) + [config.js](../public/game/src/config.js) | `tools/export_weapon_config.mjs` → `assets/weapons.json` → [tidewater_combat.gd](tidewater_combat.gd) | 四主武器、炸弹及冲击波/墨雨使用源码参数；选武器、墨耗、命中/涂墨、炸弹、大招充能及两类大招的核心事件已有无界面短测；完整弹道、命中判定、动画与特效待迁 |
 
 数据流固定为“网页源码 → 导出脚本 → 带 `schema` 与稳定 ID 的 JSON → Godot 场景/规则”。JSON 是生成物，改地图或表面规则时改原源码和导出器，再运行 `--check`；不要在 JSON、场景和脚本中分别手改同一份几何。射线命中以碰撞体的 `source_id`、命中点和法线查表面 ID，再把局部 `u/v` 交给归属格。运行时可以为性能建立 block→face 索引，但索引不得改变表面 ID 或计分结果。
 
@@ -73,9 +73,9 @@ Forward+ 使用 RenderingDevice；在 macOS 上应按实际 Godot 版本和设�
 
 1. 交付目标是 macOS 单机应用（`export_macos.sh` 产出 Universal `.app`），不是 Web 导出。Compatibility 的主要优势（最广硬件兼容、Web 导出必需）不在目标内。
 2. 画面路线是 **Godot 干净简约风**（见 §4），但"墨迹显示要好看"恰好依赖 Compatibility 缺失的能力：
-   - **MRT / 多渲染目标**：网页 [texlib.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/world/texlib.js) 一次渲染写 albedo / normal / orm 三个附件；Compatibility 不支持 MRT。
+   - **MRT / 多渲染目标**：网页 [texlib.js](../public/game/src/world/texlib.js) 一次渲染写 albedo / normal / orm 三个附件；Compatibility 不支持 MRT。
    - **Decal**：官方文档明确 Decals 只在 Forward+ 与 Mobile 可用（见 §2 贴花一行），命中贴花不能按 Compatibility 推断。
-   - **SSAO/SSIL 与后处理**：网页 [screenfx.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/fx/screenfx.js) 的 GTAO + bloom + 色彩分级 + 暗角，在 Forward+ 对应 `WorldEnvironment` 的 SSAO/glow/Adjustment 或后处理 quad。
+   - **SSAO/SSIL 与后处理**：网页 [screenfx.js](../public/game/src/fx/screenfx.js) 的 GTAO + bloom + 色彩分级 + 暗角，在 Forward+ 对应 `WorldEnvironment` 的 SSAO/glow/Adjustment 或后处理 quad。
 3. 温度仍以本机实测为准。Forward+ 的基础渲染开销可能高于 Compatibility；帧率上限、渲染分辨率和后处理也会影响负载。先保留当前低负载基线，切换时在同一场景比较帧时间和温度，不能预设哪项影响最大。
 
 执行步骤（一次做完，逐项留证）：
@@ -94,16 +94,16 @@ Forward+ 使用 RenderingDevice；在 macOS 上应按实际 Godot 版本和设�
 ## 3. 行为迁移规则
 
 1. **先迁数据语义，再迁画面。** [config.js](../public/game/src/config.js) 是速度、伤害、射速、墨耗、对局时长与武器 ID 的来源；单位保持米、秒、每秒值。修改参数时记录原值、Godot 值及差异原因。
-2. **运动用固定步长。** 原 [actor.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/actor.js) 的水平加减速、反向制动、转向、跳跃缓冲、离地宽限、顶点/下落重力和终端下落速度已按源码参数迁入 `_physics_process`，墙面攀爬也有基础实现。潜墨使用源码高度和半径生成 12 边凸棱柱碰撞体，站起前检查原站立胶囊体是否有空间；它仍是原作圆形体积与 `squidBodyLift` 的近似。继续对照原 [physics.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/physics.js) 迁台阶与落地缓冲。显示帧率与物理更新频率分别配置；规则短测不能替代实际手感验收。
-3. **涂墨逻辑只有一个权威状态。** 原 [paint.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/world/paint.js) 按可涂表面保存约 0.25 米的格子归属；地面/坡面的有效 turf 格用于面积计分，墙面可涂供攀爬但不计入 turf。Godot 的纹理、贴花和粒子只从该状态生成，不反向决定归属。重复涂己方格不加分，敌方重涂同时更新双方计数；被地图几何**或场景道具碰撞盒**遮挡的格子不计入分母——导出器必须用与运行时相同的 `Level` 构造（含 `dressingFor()` 的道具碰撞盒，见 `tools/lib/runtime_level.mjs`），漏掉道具会把分母从 69,366 抬到 70,180（+1.16 %），使每个对局的覆盖率整体偏低。掠射命中的墨团会沿射击方向拉伸，该拉伸同时作用于计分格，不能只做视觉。`coverage(team)` 对规则层返回 **0–1 比例**，HUD 才乘以 100 显示百分数。
+2. **运动用固定步长。** 原 [actor.js](../public/game/src/game/actor.js) 的水平加减速、反向制动、转向、跳跃缓冲、离地宽限、顶点/下落重力和终端下落速度已按源码参数迁入 `_physics_process`，墙面攀爬也有基础实现。潜墨使用源码高度和半径生成 12 边凸棱柱碰撞体，站起前检查原站立胶囊体是否有空间；它仍是原作圆形体积与 `squidBodyLift` 的近似。已对照原 [physics.js](../public/game/src/game/physics.js) 接入 `stepUp`、`stepDown` 与 `footRadius` 足迹探针，并验证 0.35 m 台阶、下台阶和临边支撑；按 `hardLandSpeed`/`hardLandSlow`/`hardLandTime` 实现的落地减速恢复通过隔离短测。显示帧率与物理更新频率分别配置；规则短测不能替代实际手感验收。
+3. **涂墨逻辑只有一个权威状态。** 原 [paint.js](../public/game/src/world/paint.js) 按可涂表面保存约 0.25 米的格子归属；地面/坡面的有效 turf 格用于面积计分，墙面可涂供攀爬但不计入 turf。Godot 的纹理、贴花和粒子只从该状态生成，不反向决定归属。重复涂己方格不加分，敌方重涂同时更新双方计数；被地图几何**或场景道具碰撞盒**遮挡的格子不计入分母——导出器必须用与运行时相同的 `Level` 构造（含 `dressingFor()` 的道具碰撞盒，见 `tools/lib/runtime_level.mjs`），漏掉道具会把分母从 69,366 抬到 70,180（+1.16 %），使每个对局的覆盖率整体偏低。掠射命中的墨团会沿射击方向拉伸，该拉伸同时作用于计分格，不能只做视觉。`coverage(team)` 对规则层返回 **0–1 比例**，HUD 才乘以 100 显示百分数。
 4. **区分样机网格与正式地图。** 旧平地场景的 [paint_field.gd](paint_field.gd) 是 40×40 米、256²、仅地面的简化格。默认真实地图场景已用 [surface_ink.gd](surface_ink.gd) 的表面 ID、局部坐标和格子归属驱动己方墨速度、敌墨减速/伤害、基础墙面攀爬、低矮潜墨碰撞体、HUD 及计分；接完整玩家时还要加入伤害反馈与正式裁判。不要把平地 `x/z` 采样直接套到墙面。墨迹视觉的扩张动画和甩墨拉伸需分别对照网页实现，不能用当前格子显示宣称已完成。
-5. **武器按状态和事件迁。** 射手连续射击、滚筒滚动/甩墨、蓄力狙按住/松开发射、爆破枪飞行/爆炸各保留其原始墨耗、冷却、伤害和涂墨事件；共用墨水炸弹按住/松开投掷、碰地引信、爆炸涂墨和距离伤害已有短测。玩家造成的新涂墨面积向所选武器的大招充能；冲击波与墨雨使用源码持续时间、范围和伤害参数，死亡充能减半。大招规则已有无界面短测，完整画面、粒子、音效及手感仍待验收。命中判定与特效分开，以 [weapons.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/weapons.js)、[actor.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/actor.js) 和 `config.js` 对照。遵照本项目选择：赛前及重生等待期间可换武器，活着的对局过程中不切换。
-6. **对局状态显式化。** 原 [match.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/match.js) 的状态是 `intro → playing → finish → judge → results`，没有独立 `countdown` 状态；`intro` 的原作表现是镜头/队伍介绍，数字倒计时发生在 `playing` 的最后 10 秒。真实地图样机额外有赛前 `setup`，按 Enter 后等待 4.2 秒才开始扣 90 秒对局时间；目前 `intro` 只显示简化文字倒数，尚未移植镜头与队伍介绍。终场冻结 2.6 秒后取权威墨迹覆盖率，裁判阶段约 5.1 秒，再进入结果。最后 10 秒提示与对局时长都从 `assets/weapons.json` 的 `match.finalCountdown` / `match.durations` 读取（`ROUND_DURATION_OPTION` 选择第几个选项），不再在脚本里硬编码。原作覆盖率相同时随机决定胜方，样机也保持这一规则。90 秒和 1v1 仍是样机选项，原作默认 180 秒、每队 5 人。
-7. **生命规则读同一墨迹状态。** 真实地图玩家使用 [actor.js](https://github.com/caoxing9/inkwave-game/blob/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/src/game/actor.js) 的敌墨每秒伤害、累计上限、最低 1 点生命、离墨后衰减、延迟回血、己方墨潜行加速回血与重生保护；原作初次站在出生平台时无敌时间为 0，只有重生后使用 `spawnInvuln`。落海死亡不受无敌保护阻挡。当前蓝队只是临时目标，还没有相同的生命与无敌规则。新增普通命中伤害时经过统一的玩家受伤入口；敌墨按非致死规则扣血，并分别验证无敌、致死和重生状态。
+5. **武器按状态和事件迁。** 射手连续射击、滚筒滚动/甩墨、蓄力狙按住/松开发射、爆破枪飞行/爆炸各保留其原始墨耗、冷却、伤害和涂墨事件；共用墨水炸弹按住/松开投掷、碰地引信、爆炸涂墨和距离伤害已有短测。玩家造成的新涂墨面积向所选武器的大招充能；冲击波与墨雨使用源码持续时间、范围和伤害参数，死亡充能减半。大招规则已有无界面短测，完整画面、粒子、音效及手感仍待验收。命中判定与特效分开，以 [weapons.js](../public/game/src/game/weapons.js)、[actor.js](../public/game/src/game/actor.js) 和 `config.js` 对照。遵照本项目选择：赛前及重生等待期间可换武器，活着的对局过程中不切换。
+6. **对局状态显式化。** 原 [match.js](../public/game/src/game/match.js) 的状态是 `intro → playing → finish → judge → results`，没有独立 `countdown` 状态；`intro` 的原作表现是镜头/队伍介绍，数字倒计时发生在 `playing` 的最后 10 秒。真实地图样机额外有赛前 `setup`，按 Enter 后等待 4.2 秒才开始扣 90 秒对局时间；目前 `intro` 只显示简化文字倒数，尚未移植镜头与队伍介绍。终场冻结 2.6 秒后取权威墨迹覆盖率，裁判阶段约 5.1 秒，再进入结果。最后 10 秒提示与对局时长都从 `assets/weapons.json` 的 `match.finalCountdown` / `match.durations` 读取（`ROUND_DURATION_OPTION` 选择第几个选项），不再在脚本里硬编码。原作覆盖率相同时随机决定胜方，样机也保持这一规则。90 秒和 1v1 仍是样机选项，原作默认 180 秒、每队 5 人。
+7. **生命规则读同一墨迹状态。** 真实地图玩家使用 [actor.js](../public/game/src/game/actor.js) 的敌墨每秒伤害、累计上限、最低 1 点生命、离墨后衰减、延迟回血、己方墨潜行加速回血与重生保护；原作初次站在出生平台时无敌时间为 0，只有重生后使用 `spawnInvuln`。落海死亡不受无敌保护阻挡。临时蓝队现已使用相同的敌墨伤害、累计上限、普通回血和重生保护配置；其简单 AI 没有潜墨形态，因此没有潜墨加速回血。新增普通命中伤害时经过统一的玩家受伤入口；敌墨按非致死规则扣血，并分别验证无敌、致死和重生状态。
 
 ## 4. 地图、素材与 UI 规范
 
-- 网页地图由几何定义生成，Godot 版需要重建几何、碰撞和可涂面映射。[两张 PNG 光照图](https://github.com/caoxing9/inkwave-game/tree/33d3388896d2bf7344eb4a8e8b8aa2b334519e38/public/game/assets/lightmaps/)依赖原地图 UV；只有 UV 对齐并核验画面后才复用，不能直接铺到样机地面。
+- 网页地图由几何定义生成，Godot 版需要重建几何、碰撞和可涂面映射。[两张 PNG 光照图](../public/game/assets/lightmaps/)依赖原地图 UV；只有 UV 对齐并核验画面后才复用，不能直接铺到样机地面。
 - 四个武器图标从 [ui-icons.js](../public/game/src/ui/ui-icons.js) 导出为 `assets/ui/*.svg`；两份 WOFF2 字体复制到 `assets/fonts/`。导出脚本是图标的再生成入口，手工修改图标需同步源或注明分叉。中文字体使用可验证的回退方案。
 - 网页的 CSS/Canvas 动效与程序化角色、场景纹理不是现成贴图。Godot 里按功能重建：先清晰可用的卡片/HUD，再做装饰动画。比较界面时固定 1280×720，并额外检查窗口缩放和中文溢出。
 - 当前 [角色外观脚本](tidewater_character_visual.gd)按原角色的脚底、面朝方向和头部高度生成低面数人形，加入阵营色、墨罐、潜墨体和四种武器轮廓。它只响应 `set_form`/`set_weapon`，规则状态仍由控制器和战斗脚本决定；替换成正式模型时保持这个单向接口，并核对第三人称镜头遮挡、动作方向与低矮潜墨碰撞体。无界面 [外观短测](tools/check_tidewater_visual.gd)不等于画面验收。
@@ -128,10 +128,10 @@ Forward+ 使用 RenderingDevice；在 macOS 上应按实际 Godot 版本和设�
 | D：Mac 应用 | [导出预设](export_presets.cfg)与[无界面导出脚本](export_macos.sh)已添加，本机已安装官方 4.8.dev6 模板并实际生成 Universal `.app`；签名、资源包及两帧无界面启动通过。仍需窗口画面、输入、整局和温度验收。向他人分发时再处理正式签名与公证。[macOS 导出文档](https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_macos.html) |
 | E：联机 | 单独立项：明确权威方、同步哪些输入/涂墨事件及 Web 版是否互通；不得把单机样机视为已有联机能力 |
 
-批次状态（2026-09-27，均以 `tools/run_checks.sh` 全部通过为证）：
+批次状态（2026-09-29，以 `tools/run_checks.sh` 全部通过为证）：
 
-- **已完成**：基线入库；统一验证入口；导出分母修正（含道具碰撞盒）与两个导出器共用同一 `Level` 构造；配置改为整体导出并真正消费 `match`；弹道拖尾涂墨、圆盘散布与 bloom、CPU 拉伸、滚筒碾压冷却与起速曲线、弹丸逐类型存活时间/重力/阻力、命中体改为身体胶囊；空墨回墨死锁与潜墨开火丢失；射手按 30 Hz 弹体更新补偿发射角；蓝队射手与玩家共用弹体、地形命中、伤害和涂墨通道，墨耗/回墨由同一配置驱动。
-- **未完成（B/C 剩余）**：蓝队尚未共用玩家的完整生命、重生与四种武器控制，也仍沿固定路线涂墨；`stepUp`/`stepDown`/`footRadius`/`ledgeAssist`/`squidBodyLift`/`hardLand*`/`face*`（12 个朝向弹簧）等移动手感字段的消费——这些是足迹地面探测与朝向弹簧两块结构性工作，参数已导出但不代表已实现；`burstRadius` 仍未被消费。
+- **已完成**：基线入库；统一验证入口；导出分母修正（含道具碰撞盒）与两个导出器共用同一 `Level` 构造；配置改为整体导出并真正消费 `match`；弹道拖尾涂墨、圆盘散布与 bloom、CPU 拉伸、滚筒碾压冷却与起速曲线、弹丸逐类型存活时间/重力/阻力、命中体改为身体胶囊；空墨回墨死锁与潜墨开火丢失；射手按 30 Hz 弹体更新补偿发射角；蓝队四武器核心攻击与玩家共用弹体、射线、地形命中、伤害和涂墨通道，墨耗/回墨读同一配置；蓝队从同一墨迹网格读取敌墨伤害，按玩家配置处理伤害上限、普通回血、重生时长与无敌保护，并在墨量低于 12% 时暂停行动直到补到 85%（原地等待是样机简化）；玩家 `stepUp`、`stepDown` 与 `footRadius` 足迹探针、10 个朝向弹簧参数通过隔离场景短测；爆破枪 `burstRadius` 用于短暂可见爆炸球体。
+- **未完成（B/C 剩余）**：蓝队尚未共用玩家的完整 WeaponRunner 状态、潜墨/潜墨加速回血，也仍沿固定路线涂墨；目前四武器是 1v1 样机的简化 AI，瞄准与蓄力/滚筒起手没有原版反应和动画。`ledgeAssist` 目前只参与落地探针，`squidBodyLift` 尚未完整消费；足迹探针、硬着陆恢复和朝向弹簧通过规则短测，实际手感仍需图形试玩。
 - **独立门槛**：渲染器切换为 Forward+（§2「渲染路线决策」），需在 arm64 与 x86_64 上分别验证；Mac 导出、完整图形试玩、整局帧时间与温度。
 
 当前决策：先把 B 的规则与手感字段补完，再按 §2 的步骤执行渲染器切换并做画面验收；Mac 导出为独立验收门槛。Godot 4.8 的新增视觉特性只在隔离实验中评估，不能替代这些规则门槛。

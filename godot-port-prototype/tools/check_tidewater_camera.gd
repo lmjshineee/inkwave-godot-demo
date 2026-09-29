@@ -42,7 +42,7 @@ func _check() -> void:
 		return
 	await process_frame
 	var crosshair: Label = scene.get("crosshair")
-	var crosshair_center := crosshair.global_position + crosshair.size * 0.5
+	var crosshair_center := crosshair.get_global_rect().get_center()
 	var viewport_center := scene.get_viewport().get_visible_rect().size * 0.5
 	if crosshair_center.distance_to(viewport_center) > 5.0:
 		_fail("crosshair is not centered: %s vs %s" % [crosshair_center, viewport_center])

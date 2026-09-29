@@ -3,6 +3,8 @@ extends Node3D
 # Real-map migration slice. Single authoritative ink state drives the HUD,
 # movement, weapon impacts and the temporary 1v1 combat loop.
 const SurfaceInk = preload("res://surface_ink.gd")
+const Settings = preload("res://tidewater_settings.gd")
+const SettingsPanel = preload("res://tidewater_settings_panel.gd")
 # Match length comes from assets/weapons.json (config.js MATCH.durations). The web
 # default is MATCH.defaultDuration = 180 s with teamSize 5; this prototype runs the
 # 90 s option with a 1v1 roster, which MIGRATION.md records as a known difference.
@@ -25,6 +27,7 @@ var ink: RefCounted
 var phase := "setup"
 var phase_time := 0.0
 var selected_weapon := "shooter"
+var selected_bot_weapon := "shooter"
 var round_time := 90.0
 var final_countdown := 10
 var round_left := 90.0
@@ -37,8 +40,12 @@ var player_last_damage := 99.0
 var player_ink_damage := 0.0
 var bot_health := 100.0
 var bot_respawn := 0.0
+var bot_invuln := 0.0
+var bot_last_damage := 99.0
+var bot_ink_damage := 0.0
 var result := ""
 var hud: Label
+var hud_root: Control
 var score_panel: Panel
 var orange_score: Label
 var blue_score: Label
@@ -61,15 +68,24 @@ var crosshair: Label
 var crosshair_layer: CenterContainer
 var menu_panel: Panel
 var menu_hint: Label
+var setup_settings_button: Button
+var pause_panel: Panel
+var pause_resume_button: Button
+var pause_settings_button: Button
+var settings_panel: Panel
 var weapon_cards := {}
 var shown_weapon := ""
 var pointer_locked := false
 var paused := false
+var settings: RefCounted
+var settings_path := Settings.USER_PATH
 
 
 func _ready() -> void:
 	_set_pointer_lock(false)
-	Engine.max_fps = 30
+	settings = Settings.new()
+	settings.call("load_from")
+	settings.call("apply_to", $World/Walker)
 	Engine.physics_ticks_per_second = 30
 	var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://assets/maps/tidewater_surfaces.json"))
 	ink = SurfaceInk.new(data)
@@ -90,44 +106,91 @@ func _ready() -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and phase == "playing" and not pointer_locked:
-		_set_pointer_lock(true)
+	if settings_panel != null and settings_panel.visible:
+		if event.is_action_pressed("iw_pause"):
+			settings_panel.call("close_panel")
+		return
+	if event.is_action_pressed("iw_fire") and phase == "playing" and not pointer_locked:
+		if paused and pause_panel.visible and event is InputEventMouseButton and pause_panel.get_global_rect().has_point(event.position):
+			return
+		if player_respawn > 0.0:
+			# Keep the cursor available for loadout cards during the respawn wait.
+			# A click outside the panel resumes the timer after an Esc/focus pause.
+			if paused and event is InputEventMouseButton and not menu_panel.get_global_rect().has_point(event.position):
+				paused = false
+		else:
+			_set_pointer_lock(true)
 		_update_hud()
 		return
-	if not (event is InputEventKey) or not event.pressed or event.echo:
+	if not event.is_pressed() or (event is InputEventKey and event.echo):
 		return
-	match event.keycode:
-		KEY_1, KEY_2, KEY_3, KEY_4:
-			if phase == "setup" or (phase == "playing" and player_respawn > 0.0):
-				selected_weapon = WEAPON_IDS[event.keycode - KEY_1]
-				$Combat.call("select_weapon", selected_weapon)
-		KEY_ENTER:
-			if phase == "setup":
-				_begin_intro()
-			elif phase == "results":
-				get_tree().reload_current_scene()
-		KEY_R:
+	for index in WEAPON_IDS.size():
+		if event.is_action_pressed("iw_weapon_%d" % (index + 1)):
+			_select_player_weapon(WEAPON_IDS[index])
+			return
+	if event.is_action_pressed("iw_bot_cycle"):
+		if phase == "setup":
+			selected_bot_weapon = WEAPON_IDS[(WEAPON_IDS.find(selected_bot_weapon) + 1) % WEAPON_IDS.size()]
+			$Bot.call("select_weapon", selected_bot_weapon)
+	elif event.is_action_pressed("iw_confirm"):
+		if phase == "setup":
+			_begin_intro()
+		elif phase == "results":
 			get_tree().reload_current_scene()
-		KEY_F, KEY_Q:
-			if phase == "playing" and not paused and pointer_locked and player_respawn <= 0.0:
-				$Combat.call("try_special")
-		KEY_ESCAPE:
-			if phase == "playing":
-				_set_pointer_lock(false)
+	elif event.is_action_pressed("iw_restart"):
+		get_tree().reload_current_scene()
+	elif event.is_action_pressed("iw_special"):
+		if phase == "playing" and not paused and pointer_locked and player_respawn <= 0.0:
+			$Combat.call("try_special")
+	elif event.is_action_pressed("iw_pause"):
+		if phase == "playing":
+			_set_pointer_lock(false)
 	_update_hud()
 
 
-func _set_pointer_lock(locked: bool) -> void:
+func _select_player_weapon(weapon_id: String) -> void:
+	if phase != "setup" and not (phase == "playing" and player_respawn > 0.0):
+		return
+	selected_weapon = weapon_id
+	$Combat.call("select_weapon", selected_weapon)
+	_update_hud()
+
+
+func _on_weapon_card_input(event: InputEvent, weapon_id: String) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_select_player_weapon(weapon_id)
+
+
+func _open_settings() -> void:
+	if phase != "setup" and not (phase == "playing" and paused and player_respawn <= 0.0):
+		return
+	settings_panel.call("open_with", settings, settings_path)
+	_update_hud()
+
+
+func _on_settings_saved() -> void:
+	settings.call("apply_to", $World/Walker)
+	_layout_hud()
+	_update_hud()
+
+
+func _resume_round() -> void:
+	if phase == "playing" and paused and player_respawn <= 0.0:
+		_set_pointer_lock(true)
+		_update_hud()
+
+
+func _set_pointer_lock(locked: bool, pause_when_unlocked: bool = true) -> void:
 	pointer_locked = locked
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if locked else Input.MOUSE_MODE_VISIBLE
 	$World/Walker.set("look_enabled", locked)
 	if phase == "playing":
-		paused = not locked
+		paused = not locked and pause_when_unlocked
 		$World/Walker.set("active", locked and player_respawn <= 0.0)
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and phase == "playing" and pointer_locked:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and phase == "playing" and not paused:
 		_set_pointer_lock(false)
 		if hud != null:
 			_update_hud()
@@ -157,7 +220,11 @@ func _start_round() -> void:
 	player_last_damage = 99.0
 	player_ink_damage = 0.0
 	bot_health = player_health
+	bot_invuln = 0.0
+	bot_last_damage = 99.0
+	bot_ink_damage = 0.0
 	$Bot.call("reset")
+	$Bot.call("select_weapon", selected_bot_weapon)
 	$World/Walker.set("active", true)
 	$World/Walker.visible = true
 	$Combat.call("select_weapon", selected_weapon)
@@ -197,15 +264,16 @@ func _physics_process(delta: float) -> void:
 		_finish_round()
 		_update_hud()
 		return
-	var firing := pointer_locked and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-	var throwing := pointer_locked and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+	var firing := pointer_locked and Input.is_action_pressed("iw_fire")
+	var throwing := pointer_locked and Input.is_action_pressed("iw_bomb")
 	var walker: CharacterBody3D = $World/Walker
 	var alive := player_respawn <= 0.0
 	# The walker owns the squid/fire rule ("most recent press wins") and the buffered
 	# pop-out shot, so the controller only feeds it raw key state. Holding squid and
 	# pressing fire used to be silently ignored, and a tap just before surfacing was lost.
-	walker.call("update_intent", delta, alive and firing, alive and Input.is_key_pressed(KEY_SHIFT),
-		bool($Combat.call("is_busy")))
+	var firing_pose := bool($Combat.get("rolling")) or float($Combat.get("firing_time")) > 0.0
+	walker.call("update_intent", delta, alive and firing, alive and Input.is_action_pressed("iw_squid"),
+		bool($Combat.call("is_busy")), firing_pose, alive and throwing)
 	var squid := bool(walker.get("squid_form"))
 	var weapon_fire := bool(walker.get("weapon_fire"))
 	_update_player_respawn(delta)
@@ -243,13 +311,15 @@ func paint_at_world(center: Vector3, team: int, radius: float, seed: float,
 
 
 func damage_bot(amount: float) -> void:
-	if phase != "playing" or bot_respawn > 0.0:
+	if phase != "playing" or bot_respawn > 0.0 or amount <= 0.0 or bot_invuln > 0.0:
 		return
+	bot_last_damage = 0.0
 	bot_health = maxf(0.0, bot_health - amount)
 	if bot_health <= 0.0:
 		$Combat.call("_paint_player", $Bot.global_position + Vector3.UP * 0.35, 1.7, randf())
-		bot_respawn = 4.0
+		bot_respawn = float($Combat.get("weapon_data")["player"]["respawnTime"])
 		$Bot.visible = false
+		$Bot.call("clear_attack_visual")
 
 
 func damage_player(amount: float, bypass_invuln: bool = false) -> void:
@@ -266,6 +336,8 @@ func damage_player(amount: float, bypass_invuln: bool = false) -> void:
 		$World/Walker.set("active", false)
 		$World/Walker.visible = false
 		$Combat.call("on_death")
+		_set_pointer_lock(false, false)
+		_update_hud()
 
 
 func _update_player_vitals(delta: float) -> void:
@@ -300,11 +372,13 @@ func _update_player_respawn(delta: float) -> void:
 	player_respawn = maxf(0.0, player_respawn - delta)
 	if player_respawn > 0.0:
 		return
+	if not paused:
+		_set_pointer_lock(true)
 	var pads: Array = $World/Map.get("spawn_pads")
 	walker.global_position = (pads[0] as Vector3) + Vector3.UP * 0.05
 	walker.call("reset_movement_state")
 	walker.set("ink_owner", -1)
-	walker.set("active", true)
+	walker.set("active", not paused and pointer_locked)
 	walker.visible = true
 	player_health = float($Combat.get("weapon_data")["player"]["hp"])
 	player_invuln = float($Combat.get("weapon_data")["player"]["spawnInvuln"])
@@ -319,16 +393,44 @@ func _update_bot(delta: float) -> void:
 	if bot_respawn > 0.0:
 		bot_respawn = maxf(0.0, bot_respawn - delta)
 		if bot_respawn <= 0.0:
-			bot_health = float($Combat.get("weapon_data")["player"]["hp"])
+			var player_config: Dictionary = $Combat.get("weapon_data")["player"]
+			bot_health = float(player_config["hp"])
+			bot_invuln = float(player_config["spawnInvuln"])
+			bot_last_damage = 99.0
+			bot_ink_damage = 0.0
 			bot.call("reset")
 		return
+	_update_bot_vitals(delta)
 	bot.call("tick", delta)
+
+
+func _update_bot_vitals(delta: float) -> void:
+	if phase != "playing" or bot_respawn > 0.0:
+		return
+	var player_config: Dictionary = $Combat.get("weapon_data")["player"]
+	bot_invuln = maxf(0.0, bot_invuln - delta)
+	bot_last_damage += delta
+	var on_enemy := int($Bot.call("floor_ink_owner")) == 0
+	if on_enemy:
+		if bot_ink_damage < float(player_config["enemyInkDamageCap"]) and bot_invuln <= 0.0:
+			var damage := minf(float(player_config["enemyInkDps"]) * delta, float(player_config["enemyInkDamageCap"]) - bot_ink_damage)
+			bot_ink_damage += damage
+			bot_health = maxf(1.0, bot_health - damage)
+		bot_last_damage = minf(bot_last_damage, 0.4)
+	else:
+		bot_ink_damage = maxf(0.0, bot_ink_damage - delta * 30.0)
+	if bot_last_damage > float(player_config["regenDelay"]) and bot_health < float(player_config["hp"]):
+		bot_health = minf(float(player_config["hp"]), bot_health + float(player_config["regenRate"]) * delta)
 
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
-	score_panel = _hud_panel(layer, "ScorePanel")
+	hud_root = Control.new()
+	hud_root.name = "HudRoot"
+	hud_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(hud_root)
+	score_panel = _hud_panel(hud_root, "ScorePanel")
 	orange_score = _hud_label(score_panel, "OrangeScore", ORANGE, 24)
 	blue_score = _hud_label(score_panel, "BlueScore", BLUE.lightened(0.45), 24)
 	timer_label = _hud_label(score_panel, "Timer", Color.WHITE, 34)
@@ -337,19 +439,19 @@ func _build_hud() -> void:
 	timer_label.add_theme_font_override("font", number_font)
 	orange_bar = _hud_bar(score_panel, "OrangeTurf", ORANGE)
 	blue_bar = _hud_bar(score_panel, "BlueTurf", BLUE)
-	vitals_panel = _hud_panel(layer, "VitalsPanel")
+	vitals_panel = _hud_panel(hud_root, "VitalsPanel")
 	ink_label = _hud_label(vitals_panel, "InkLabel", Color.WHITE, 17)
 	health_label = _hud_label(vitals_panel, "HealthLabel", Color.WHITE, 17)
 	ink_bar = _hud_bar(vitals_panel, "InkBar", ORANGE)
 	health_bar = _hud_bar(vitals_panel, "HealthBar", Color("fc4266"))
-	special_panel = _hud_panel(layer, "SpecialPanel")
+	special_panel = _hud_panel(hud_root, "SpecialPanel")
 	special_label = _hud_label(special_panel, "SpecialLabel", Color.WHITE, 18)
 	special_bar = _hud_bar(special_panel, "SpecialBar", ORANGE.lightened(0.35))
-	result_panel = _hud_panel(layer, "ResultPanel")
+	result_panel = _hud_panel(hud_root, "ResultPanel")
 	result_label = _hud_label(result_panel, "ResultLabel", Color.WHITE, 28)
 	result_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	result_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	status_panel = _hud_panel(layer, "StatusPanel")
+	status_panel = _hud_panel(hud_root, "StatusPanel")
 	hud = Label.new()
 	hud.name = "StatusLine"
 	hud.add_theme_font_size_override("font_size", 17)
@@ -362,21 +464,22 @@ func _build_hud() -> void:
 	weapon_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	weapon_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	weapon_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(weapon_icon)
+	hud_root.add_child(weapon_icon)
 	crosshair_layer = CenterContainer.new()
 	crosshair_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(crosshair_layer)
+	hud_root.add_child(crosshair_layer)
 	crosshair = Label.new()
 	crosshair.text = "+"
 	crosshair.add_theme_font_size_override("font_size", 30)
 	crosshair.add_theme_color_override("font_shadow_color", Color.BLACK)
 	crosshair_layer.add_child(crosshair)
-	_build_weapon_menu(layer)
+	_build_weapon_menu(hud_root)
+	_build_settings_ui(hud_root)
 	get_viewport().size_changed.connect(_layout_hud)
 	_layout_hud()
 
 
-func _hud_panel(parent: CanvasLayer, name_text: String) -> Panel:
+func _hud_panel(parent: Control, name_text: String) -> Panel:
 	var panel := Panel.new()
 	panel.name = name_text
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -416,11 +519,11 @@ func _ui_style(background: Color, outline: Color, border_width: int, radius: int
 	return style
 
 
-func _build_weapon_menu(layer: CanvasLayer) -> void:
+func _build_weapon_menu(parent: Control) -> void:
 	menu_panel = Panel.new()
-	menu_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	menu_panel.add_theme_stylebox_override("panel", _ui_style(UI_PANEL, Color(1.0, 1.0, 1.0, 0.22), 3, 22))
-	layer.add_child(menu_panel)
+	parent.add_child(menu_panel)
 	var title := Label.new()
 	title.text = "INKWAVE"
 	title.position = Vector2(0.0, 17.0)
@@ -439,7 +542,8 @@ func _build_weapon_menu(layer: CanvasLayer) -> void:
 	for index in WEAPON_IDS.size():
 		var weapon_id: String = WEAPON_IDS[index]
 		var card := Panel.new()
-		card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.mouse_filter = Control.MOUSE_FILTER_STOP
+		card.gui_input.connect(_on_weapon_card_input.bind(weapon_id))
 		menu_panel.add_child(card)
 		var icon := TextureRect.new()
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -457,6 +561,40 @@ func _build_weapon_menu(layer: CanvasLayer) -> void:
 		name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		card.add_child(name_label)
 		weapon_cards[weapon_id] = card
+	setup_settings_button = Button.new()
+	setup_settings_button.name = "SetupSettingsButton"
+	setup_settings_button.text = "设置"
+	setup_settings_button.add_theme_stylebox_override("normal", _ui_style(Color("302112"), ORANGE, 2, 8))
+	setup_settings_button.add_theme_stylebox_override("hover", _ui_style(Color("59300d"), ORANGE, 2, 8))
+	setup_settings_button.add_theme_color_override("font_color", Color.WHITE)
+	setup_settings_button.add_theme_color_override("font_hover_color", Color.WHITE)
+	setup_settings_button.pressed.connect(_open_settings)
+	menu_panel.add_child(setup_settings_button)
+
+
+func _build_settings_ui(parent: Control) -> void:
+	pause_panel = Panel.new()
+	pause_panel.name = "PausePanel"
+	pause_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	pause_panel.add_theme_stylebox_override("panel", _ui_style(UI_PANEL, ORANGE, 2, 20))
+	parent.add_child(pause_panel)
+	var pause_title := _hud_label(pause_panel, "PauseTitle", ORANGE, 28)
+	pause_title.text = "已暂停"
+	pause_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pause_resume_button = Button.new()
+	pause_resume_button.name = "ResumeButton"
+	pause_resume_button.text = "继续游戏"
+	pause_resume_button.pressed.connect(_resume_round)
+	pause_panel.add_child(pause_resume_button)
+	pause_settings_button = Button.new()
+	pause_settings_button.name = "PauseSettingsButton"
+	pause_settings_button.text = "设置"
+	pause_settings_button.pressed.connect(_open_settings)
+	pause_panel.add_child(pause_settings_button)
+	settings_panel = SettingsPanel.new()
+	parent.add_child(settings_panel)
+	settings_panel.saved.connect(_on_settings_saved)
+	settings_panel.closed.connect(_update_hud)
 
 
 func _refresh_weapon_cards() -> void:
@@ -469,7 +607,13 @@ func _refresh_weapon_cards() -> void:
 
 
 func _layout_hud() -> void:
-	var size := get_viewport().get_visible_rect().size
+	var viewport_size := get_viewport().get_visible_rect().size
+	# Keep the complete settings dialog and four-card loadout inside small windows.
+	var requested_scale := float(settings.get("ui_scale"))
+	var effective_scale := minf(requested_scale, minf(viewport_size.x / 520.0, viewport_size.y / 500.0))
+	hud_root.scale = Vector2.ONE * effective_scale
+	hud_root.size = viewport_size / effective_scale
+	var size := hud_root.size
 	var score_width := minf(400.0, size.x - 24.0)
 	score_panel.position = Vector2((size.x - score_width) * 0.5, 12.0)
 	score_panel.size = Vector2(score_width, 86.0)
@@ -513,7 +657,7 @@ func _layout_hud() -> void:
 	crosshair_layer.size = size
 	weapon_icon.position = Vector2(maxf(18.0, size.x - 114.0), 20.0)
 	var width := minf(850.0, size.x - 24.0)
-	menu_panel.size = Vector2(width, 270.0)
+	menu_panel.size = Vector2(width, 310.0)
 	menu_panel.position = (size - menu_panel.size) * 0.5
 	var title: Label = menu_panel.get_child(0)
 	title.size = Vector2(width, 58.0)
@@ -527,13 +671,30 @@ func _layout_hud() -> void:
 		icon.position.x = (card_width - 60.0) * 0.5
 		var name_label: Label = card.get_child(1)
 		name_label.size = Vector2(card_width, 28.0)
+	setup_settings_button.position = Vector2((width - 150.0) * 0.5, 258.0)
+	setup_settings_button.size = Vector2(150.0, 36.0)
+	var pause_width := minf(420.0, size.x - 24.0)
+	pause_panel.size = Vector2(pause_width, 178.0)
+	pause_panel.position = (size - pause_panel.size) * 0.5
+	var pause_title: Label = pause_panel.get_node("PauseTitle")
+	pause_title.position = Vector2(16.0, 22.0)
+	pause_title.size = Vector2(pause_width - 32.0, 45.0)
+	pause_resume_button.position = Vector2(24.0, 100.0)
+	pause_resume_button.size = Vector2((pause_width - 56.0) * 0.5, 48.0)
+	pause_settings_button.position = Vector2(32.0 + pause_resume_button.size.x, 100.0)
+	pause_settings_button.size = pause_resume_button.size
+	settings_panel.size = Vector2(minf(470.0, size.x - 24.0), 440.0)
+	settings_panel.position = (size - settings_panel.size) * 0.5
 
 
 func _update_hud() -> void:
 	crosshair.visible = phase == "playing" and player_respawn <= 0.0 and pointer_locked
-	menu_panel.visible = phase == "setup" or (phase == "playing" and player_respawn > 0.0)
+	var settings_open := settings_panel.visible
+	menu_panel.visible = (phase == "setup" or (phase == "playing" and player_respawn > 0.0)) and not settings_open
+	setup_settings_button.visible = phase == "setup"
+	pause_panel.visible = phase == "playing" and paused and player_respawn <= 0.0 and not settings_open
 	if menu_panel.visible:
-		menu_hint.text = "选择武器 · 按 1–4 · Enter 开始" if phase == "setup" else "等待重生 · 按 1–4 更换武器"
+		menu_hint.text = ("橙队 1–4/点击 · 蓝队 B：%s · Enter 开始" % WEAPON_NAMES[selected_bot_weapon]) if phase == "setup" else ("已暂停 · 点击面板外继续" if paused else "等待重生 · 按 1–4 或点击卡片换武器")
 	if shown_weapon != selected_weapon:
 		weapon_icon.texture = load("res://assets/ui/%s.svg" % selected_weapon) as Texture2D
 		shown_weapon = selected_weapon
@@ -567,7 +728,7 @@ func _update_hud() -> void:
 	elif phase == "judge" or phase == "results":
 		result_label.text = "%s\n橙 %.1f%%   蓝 %.1f%%" % [result, judged_coverage[0] * 100.0, judged_coverage[1] * 100.0]
 	if phase == "setup":
-		hud.text = "赛前按 1–4 选武器 · Enter 开始"
+		hud.text = "赛前按 1–4 或点击卡片选橙队武器 · B 切换蓝队武器 · Enter 开始"
 	elif phase == "intro":
 		hud.text = "准备开战 · %d" % int(ceil(maxf(0.0, INTRO_SECONDS - phase_time)))
 	elif phase == "finish":
@@ -577,9 +738,9 @@ func _update_hud() -> void:
 	elif phase == "results":
 		hud.text = "Enter 再开一局 · R 重开"
 	elif player_respawn > 0.0:
-		hud.text = "被击倒 · %.1f 秒后重生 · 可按 1–4 更换武器" % player_respawn
+		hud.text = ("已暂停 · 点击卡片换武器，点击面板外继续" if paused else "被击倒 · %.1f 秒后重生 · 按 1–4 或点击卡片换武器" % player_respawn)
 	elif paused:
-		hud.text = "已暂停 · 点击画面继续 · R 重开"
+		hud.text = "已暂停 · 点击继续或画面继续 · 设置可调整帧率和灵敏度"
 	else:
 		var charge := float(combat.get("charge_fraction"))
 		var charge_text := "  蓄力 %d%%" % int(charge * 100.0) if bool(combat.get("charging")) else ""

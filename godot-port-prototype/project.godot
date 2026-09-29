@@ -20,6 +20,26 @@ window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 
+[input]
+
+iw_move_left={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":65)]}
+iw_move_right={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":68)]}
+iw_move_forward={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":87)]}
+iw_move_back={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":83)]}
+iw_jump={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":32)]}
+iw_squid={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":4194325)]}
+iw_fire={"deadzone": 0.2, "events": [Object(InputEventMouseButton,"button_index":1)]}
+iw_bomb={"deadzone": 0.2, "events": [Object(InputEventMouseButton,"button_index":2)]}
+iw_special={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":70), Object(InputEventKey,"keycode":81)]}
+iw_weapon_1={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":49)]}
+iw_weapon_2={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":50)]}
+iw_weapon_3={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":51)]}
+iw_weapon_4={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":52)]}
+iw_bot_cycle={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":66)]}
+iw_confirm={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":4194309)]}
+iw_restart={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":82)]}
+iw_pause={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":4194305)]}
+
 [rendering]
 
 renderer/rendering_method="gl_compatibility"
