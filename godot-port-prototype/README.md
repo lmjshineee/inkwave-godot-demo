@@ -43,7 +43,7 @@ NODE=$(command -v node) ./godot-port-prototype/tools/run_checks.sh
 
 ### 导出 macOS 应用
 
-[导出预设](export_presets.cfg)固定 Universal 架构和本地 Demo 的 Bundle ID。本机现已安装与 Godot 4.8.dev6 匹配的[官方导出模板](https://godotengine.org/download/archive/4.8-dev6/)；在仓库根目录运行 `./godot-port-prototype/export_macos.sh` 可生成 `godot-port-prototype/build/INKWAVE Demo.app`。2026-09-29 的 0.2.0 预览包已核对 arm64/x86_64、资源包、临时签名、两帧无界面启动及导出应用 30 帧图形窗口启动；源场景一次四帧捕获确认赛前菜单、设置面板、开局和战斗静态画面。脚本会重复执行导入、导出、日志、签名和无界面短启动检查。导出的 `.app` 仍需检查真实输入、完整对局和设备温度。向他人分发另需处理正式签名与公证。
+[导出预设](export_presets.cfg)固定 Apple Silicon arm64 架构和本地 Demo 的 Bundle ID。本机现已安装与 Godot 4.8.dev6 匹配的[官方导出模板](https://godotengine.org/download/archive/4.8-dev6/)；在仓库根目录运行 `./godot-port-prototype/export_macos.sh` 可生成 `godot-port-prototype/build/INKWAVE Demo.app`。脚本从本机已安装的官方模板提取 arm64 部分，在忽略的 `.godot/` 中缓存专用模板，不把引擎二进制上传到 Git。2026-09-29 的 0.2.0 预览包已核对 arm64、资源包、临时签名、两帧无界面启动及导出应用 30 帧图形窗口启动；源场景一次四帧捕获确认赛前菜单、设置面板、开局和战斗静态画面。导出的 `.app` 仍需检查真实输入、完整对局和设备温度。向他人分发另需处理正式签名与公证。
 
 ## 从原项目迁移了什么
 

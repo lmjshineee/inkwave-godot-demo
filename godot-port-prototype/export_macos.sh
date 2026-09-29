@@ -14,6 +14,24 @@ else
 fi
 
 mkdir -p "$PROJECT_DIR/build" "$PROJECT_DIR/.godot"
+TEMPLATE_VERSION=$("$GODOT_BIN" --version | cut -d. -f1-3)
+TEMPLATE_SOURCE=${GODOT_MACOS_TEMPLATE:-"$HOME/Library/Application Support/Godot/export_templates/$TEMPLATE_VERSION/macos.zip"}
+ARM64_TEMPLATE="$PROJECT_DIR/.godot/macos-arm64-template.zip"
+if [ ! -f "$TEMPLATE_SOURCE" ]; then
+  printf '找不到 Godot 官方 macOS 导出模板：%s\n' "$TEMPLATE_SOURCE" >&2
+  exit 1
+fi
+if [ ! -f "$ARM64_TEMPLATE" ] || [ "$TEMPLATE_SOURCE" -nt "$ARM64_TEMPLATE" ]; then
+  TEMPLATE_WORK=$(mktemp -d "$PROJECT_DIR/.godot/arm64-template.XXXXXX")
+  trap 'rm -rf "$TEMPLATE_WORK"' EXIT
+  unzip -q "$TEMPLATE_SOURCE" -d "$TEMPLATE_WORK"
+  for KIND in release debug; do
+    TEMPLATE_BIN="$TEMPLATE_WORK/macos_template.app/Contents/MacOS/godot_macos_$KIND"
+    lipo -thin arm64 "$TEMPLATE_BIN.universal" -output "$TEMPLATE_BIN.arm64"
+    rm "$TEMPLATE_BIN.universal"
+  done
+  (cd "$TEMPLATE_WORK" && zip -q -r "$ARM64_TEMPLATE" macos_template.app)
+fi
 "$GODOT_BIN" --headless --log-file "$PROJECT_DIR/.godot/import.log" --path "$PROJECT_DIR" --import
 "$GODOT_BIN" --headless --log-file "$PROJECT_DIR/.godot/export.log" --path "$PROJECT_DIR" \
   --export-release macOS "$OUTPUT_APP"
@@ -21,6 +39,10 @@ mkdir -p "$PROJECT_DIR/build" "$PROJECT_DIR/.godot"
 APP_EXEC=$(find "$OUTPUT_APP/Contents/MacOS" -type f -perm -111 -print -quit 2>/dev/null || true)
 if [ ! -d "$OUTPUT_APP/Contents/MacOS" ] || [ -z "$APP_EXEC" ]; then
   printf '%s\n' '导出命令结束，但没有找到可执行的 macOS .app。请检查 .godot/export.log。' >&2
+  exit 1
+fi
+if [ "$(lipo -archs "$APP_EXEC")" != 'arm64' ]; then
+  printf '%s\n' '导出程序必须仅包含 arm64 架构。' >&2
   exit 1
 fi
 
