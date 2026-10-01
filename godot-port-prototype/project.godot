@@ -11,8 +11,14 @@ config_version=5
 [application]
 
 config/name="INKWAVE Demo"
+config/version="0.3.0-preview.15"
 run/main_scene="res://tidewater_play.tscn"
-config/features=PackedStringArray("4.8", "GL Compatibility")
+run/max_fps=30
+config/features=PackedStringArray("4.8", "Forward Plus")
+
+[physics]
+
+common/physics_ticks_per_second=30
 
 [display]
 
@@ -20,28 +26,11 @@ window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 
-[input]
-
-iw_move_left={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":65)]}
-iw_move_right={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":68)]}
-iw_move_forward={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":87)]}
-iw_move_back={"deadzone": 0.2, "events": [Object(InputEventKey,"physical_keycode":83)]}
-iw_jump={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":32)]}
-iw_squid={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":4194325)]}
-iw_fire={"deadzone": 0.2, "events": [Object(InputEventMouseButton,"button_index":1)]}
-iw_bomb={"deadzone": 0.2, "events": [Object(InputEventMouseButton,"button_index":2)]}
-iw_special={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":70), Object(InputEventKey,"keycode":81)]}
-iw_weapon_1={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":49)]}
-iw_weapon_2={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":50)]}
-iw_weapon_3={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":51)]}
-iw_weapon_4={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":52)]}
-iw_bot_cycle={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":66)]}
-iw_confirm={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":4194309)]}
-iw_restart={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":82)]}
-iw_pause={"deadzone": 0.2, "events": [Object(InputEventKey,"keycode":4194305)]}
-
 [rendering]
 
-renderer/rendering_method="gl_compatibility"
-renderer/rendering_method.mobile="gl_compatibility"
+renderer/rendering_method="forward_plus"
+renderer/rendering_method.mobile="forward_plus"
+anti_aliasing/quality/msaa_3d=1
+lights_and_shadows/directional_shadow/size=1024
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
 textures/vram_compression/import_etc2_astc=true

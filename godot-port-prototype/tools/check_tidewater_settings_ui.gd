@@ -5,6 +5,7 @@ const TEST_PATH := "/tmp/inkwave-settings-ui-check.cfg"
 
 
 func _initialize() -> void:
+	preload("res://match_setup.gd").team_size = 1
 	call_deferred("_check")
 
 
@@ -14,8 +15,9 @@ func _check() -> void:
 	scene.set("settings_path", TEST_PATH)
 	root.add_child(scene)
 	await process_frame
+	scene.call("show_preparation")
 	var panel: Panel = scene.get("settings_panel")
-	var setup_button: Button = scene.get("setup_settings_button")
+	var setup_button: Button = scene.get("frontend").get("settings_button")
 	var pause_panel: Panel = scene.get("pause_panel")
 	if not setup_button.visible or panel.visible or pause_panel.visible:
 		_fail("setup settings entry has the wrong initial visibility")
@@ -70,6 +72,7 @@ func _check() -> void:
 	if not bool(scene.get("paused")) or not pause_panel.visible or bool(scene.get("pointer_locked")):
 		_fail("Esc did not open the pause controls")
 		return
+	await process_frame
 	_click(scene.get("pause_settings_button") as Button)
 	await process_frame
 	if not panel.visible or pause_panel.visible or not bool(scene.get("paused")):
@@ -85,8 +88,8 @@ func _check() -> void:
 	if bool(scene.get("paused")) or not bool(scene.get("pointer_locked")) or pause_panel.visible:
 		_fail("resume button did not return to play")
 		return
-	scene.call("damage_player", 100.0)
-	if pause_panel.visible or setup_button.visible:
+	scene.call("damage_player", 200.0)
+	if pause_panel.visible or setup_button.is_visible_in_tree():
 		_fail("settings entry leaked into the respawn loadout")
 		return
 	DirAccess.remove_absolute(TEST_PATH)
@@ -97,7 +100,7 @@ func _check() -> void:
 func _click(control: Control) -> void:
 	var event := InputEventMouseButton.new()
 	event.button_index = MOUSE_BUTTON_LEFT
-	event.position = control.get_global_rect().get_center()
+	event.position = control.get_global_transform_with_canvas() * (control.size * 0.5)
 	event.global_position = event.position
 	event.pressed = true
 	root.push_input(event, true)

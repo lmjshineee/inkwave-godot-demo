@@ -2,6 +2,7 @@ extends SceneTree
 
 
 func _initialize() -> void:
+	preload("res://match_setup.gd").team_size = 1
 	call_deferred("_check")
 
 
@@ -11,11 +12,12 @@ func _check() -> void:
 	seed(20260927)
 	var scene := (load("res://tidewater_play.tscn") as PackedScene).instantiate()
 	root.add_child(scene)
+	scene.call("show_preparation")
 	await physics_frame
 	var combat: Node3D = scene.get_node("Combat")
 	var ink: RefCounted = scene.get("ink")
 	var data: Dictionary = combat.get("weapon_data")
-	if int(data["schema"]) != 1 or (data["weaponOrder"] as Array).size() != 4:
+	if int(data["schema"]) != 1 or (data["weaponOrder"] as Array).size() != 7:
 		_fail("source weapon data")
 		return
 	var select := InputEventKey.new()
@@ -25,6 +27,36 @@ func _check() -> void:
 	if scene.get("selected_weapon") != "charger" or combat.get("selected_id") != "charger":
 		_fail("pre-match weapon choice")
 		return
+	# The weapon order and the card labels are data, not controller constants. Comparing
+	# them with the export would also pass for a hardcoded copy on a day when the two
+	# happen to agree, so both are additionally driven from injected values: a permuted
+	# order must move the number keys, and an injected label must come back out.
+	if scene.get("weapon_order") != data["weaponOrder"]:
+		_fail("weapon order does not come from the export: " + str(scene.get("weapon_order")))
+		return
+	var weapons_text: Dictionary = (data["text"] as Dictionary)["weapons"]
+	var exported_label := String(weapons_text["shooter"])
+	var label: Label = ((scene.get("weapon_cards") as Dictionary)["shooter"] as Panel).get_child(1)
+	if label.text != "1  " + exported_label:
+		_fail("weapon card label is not the exported text: %s" % label.text)
+		return
+	weapons_text["shooter"] = "注入名"
+	if String(scene.call("_weapon_text", "shooter")) != "注入名":
+		_fail("the card label lookup does not read the export")
+		return
+	weapons_text["shooter"] = exported_label
+	scene.set("weapon_order", ["blaster", "charger", "roller", "shooter"])
+	select.keycode = KEY_1
+	scene.call("_input", select)
+	if scene.get("selected_weapon") != "blaster":
+		_fail("number keys ignore the exported order: " + str(scene.get("selected_weapon")))
+		return
+	scene.set("weapon_order", data["weaponOrder"])
+	select.keycode = KEY_3
+	scene.call("_input", select)
+	if scene.get("selected_weapon") != "charger" or combat.get("selected_id") != "charger":
+		_fail("the restored order did not resume the exported choice")
+		return
 	scene.call("_start_round")
 	select.keycode = KEY_4
 	scene.call("_input", select)
@@ -33,7 +65,7 @@ func _check() -> void:
 		return
 	combat.call("select_weapon", "shooter")
 	var before := float(combat.get("ink_amount"))
-	combat.call("tick", 0.1, true, false)
+	combat.call("tick", 1.0/30.0, true, false)
 	if (combat.get("projectiles") as Array).size() != 1 or absf(float(combat.get("ink_amount")) - before + 0.95) > 0.001:
 		_fail("shooter projectile or source ink cost")
 		return
@@ -62,7 +94,7 @@ func _check() -> void:
 	# Spread: consecutive shots must fan out inside the source cone instead of all
 	# following the crosshair exactly (weapons.js:57-64, 119).
 	var walker := scene.get_node("World/Walker")
-	var cone := float(shooter["spreadBaseGround"]) if walker.is_on_floor() else float(shooter["spreadBaseAir"])
+	var cone := float(shooter["spreadBaseGround"]) if bool(walker.get("grounded")) else float(shooter["spreadBaseAir"])
 	var directions: Array[Vector3] = []
 	for shot_index in range(8):
 		combat.call("_spawn_shot", shooter)

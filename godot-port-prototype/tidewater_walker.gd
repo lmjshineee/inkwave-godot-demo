@@ -1,9 +1,12 @@
 extends CharacterBody3D
 
+signal jumped
+signal form_changed(squid: bool)
+
 # CharacterBody3D traversal for the exported Tidewater map.
 # Horizontal handling follows actor.js; kid/squid collision volumes share source dimensions.
-const SQUID_SIDES := 12
 const LOOK_SENSITIVITY := 0.0021
+var look_sensitivity := LOOK_SENSITIVITY
 const CAMERA_DISTANCE := 4.5
 const CAMERA_HEIGHT := 1.85
 # Foot-probe constants from the source. physics.js:11 defines WALKABLE = 0.68, the
@@ -18,6 +21,8 @@ const WALKABLE := 0.68
 # A ring sample must sit this far above the centre sample to count as a step
 # (physics.js groundProbe stepMin): slopes stay exact, curbs get stepped onto.
 const STEP_MIN := 0.12
+# Tolerance on the upward reach of the foot probe, see _resolve_ground.
+const STEP_EPSILON := 0.02
 var jump_requested := false
 var jump_buffer := 0.0
 var coyote := 0.0
@@ -32,11 +37,18 @@ var _fire_press := -1.0
 var _squid_press := -1.0
 var _previous_fire := false
 var _previous_squid := false
+# Team 0 is the local player in this 1v1 demo; the enemy pad is spawn_pads[1 - team].
+@export var team := 0
+# Enemy spawn barrier, actor.js:522-533. The radius has been exported by
+# export_tidewater_map.mjs since it was written (spawnBarrier 4.2) and had no consumer.
+var spawn_barrier := 0.0
+var _spawn_pads: Array = []
 var ink: RefCounted
 var ink_owner := -1
 var active := true
 var auto_respawn := true
 var firing_speed_limit := INF
+var external_speed_factor:=1.0
 var climbing := false
 var wall_normal := Vector3.ZERO
 var climb_velocity := 0.0
@@ -45,16 +57,17 @@ var player_config: Dictionary = {}
 var squid_form := false
 var camera_yaw := 0.0
 var camera_pitch := -0.1
-var look_sensitivity := LOOK_SENSITIVITY
 var look_enabled := false
 var slam_phase := ""
 var slam_time := 0.0
 var slam_config: Dictionary = {}
 var slam_impact_pending := false
-# Ground state owned by the foot probe (see _resolve_ground). The engine's
-# is_on_floor() stays in use for collision and for the other modules, but the walk
-# rules use this footprint-based state, because a 0.24 m footprint and a 0.38 m
-# capsule disagree at ledge edges.
+# Ground state owned by the foot probe (see _resolve_ground). Both bodies are lifted out
+# of the ground, so the engine's is_on_floor() is false whenever this controller runs:
+# everything that asks "am I standing" — the walk rules here, the match controller's
+# enemy-ink damage and regen, the weapon script's ink refill, ground/air spread and the
+# roller's roll condition — reads this footprint-based state instead.
+var _step_blocked := false
 var grounded := false
 var ground_normal := Vector3.UP
 # Hard-landing recovery (actor.js:241, 388, 508-512). A landing faster than
@@ -83,8 +96,14 @@ var _squid_shape: Shape3D
 func _ready() -> void:
 	var config: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://assets/weapons.json"))
 	player_config = config["player"]
-	_kid_shape = $CollisionShape3D.shape
-	_squid_shape = _make_squid_shape()
+	preload("res://gameplay_rules.gd").apply(config)
+	$Body.call("configure_animation", player_config)
+	# Both bodies come from the source formula, not from the scene's placeholder shape.
+	# _apply_form below pushes them onto the collision node, so the scene's numbers are
+	# only a readable placeholder and config.js stays the single source.
+	_kid_shape = _make_body_shape(false)
+	_squid_shape = _make_body_shape(true)
+	_load_spawn_barrier()
 	step_height = float(player_config["stepUp"])
 	step_down = float(player_config["stepDown"])
 	foot_radius = float(player_config["footRadius"])
@@ -94,11 +113,15 @@ func _ready() -> void:
 	floor_snap_length = step_down
 	body_yaw = $Body.rotation.y
 	aim_yaw = camera_yaw
+	# update_form() returns early while the form already matches, so without this the
+	# collision node would keep the scene's placeholder capsule instead of the shape built
+	# above and the two could silently drift apart.
+	_apply_form(squid_form)
 	_update_camera()
 
 
 func _input(event: InputEvent) -> void:
-	if active and event.is_action_pressed("iw_jump") and not (event is InputEventKey and event.echo):
+	if active and event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_SPACE or event.physical_keycode == KEY_SPACE):
 		jump_requested = true
 	if active and look_enabled and event is InputEventMouseMotion:
 		apply_look_delta(event.relative)
@@ -141,14 +164,19 @@ func _physics_process(delta: float) -> void:
 	if not slam_phase.is_empty():
 		_advance_slam(delta)
 		return
-	var axis := Input.get_vector("iw_move_left", "iw_move_right", "iw_move_back", "iw_move_forward")
+	var axis := Vector2.ZERO
+	if Input.is_physical_key_pressed(KEY_A): axis.x -= 1.0
+	if Input.is_physical_key_pressed(KEY_D): axis.x += 1.0
+	if Input.is_physical_key_pressed(KEY_W): axis.y += 1.0
+	if Input.is_physical_key_pressed(KEY_S): axis.y -= 1.0
+	axis = axis.normalized()
 	axis = _camera_relative_axis(axis)
 	ink_owner = _floor_ink_owner() if ink != null else -1
 	# The match controller owns the form decision through update_intent(); the bare
 	# walk scene (no controller) keeps reading the key directly.
 	var squid := squid_form
 	if not intent_driven:
-		squid = update_form(Input.is_action_pressed("iw_squid"))
+		squid = update_form(Input.is_key_pressed(KEY_SHIFT) and can_dive())
 	_advance_jump_input(delta)
 	hard_land = maxf(0.0, hard_land - delta / float(player_config["hardLandTime"]))
 	# Ground state from the previous frame's foot probe, exactly as actor.js reads
@@ -161,6 +189,9 @@ func _physics_process(delta: float) -> void:
 	if _update_climb(delta, squid, axis):
 		coyote = maxf(0.0, coyote - delta)
 		move_and_slide()
+		# The source runs the barrier after collide in every non-special frame, including
+		# a climbing one.
+		_apply_spawn_barrier()
 		_face(delta, squid, axis, submerged)
 		_update_camera()
 		return
@@ -172,13 +203,22 @@ func _physics_process(delta: float) -> void:
 		# surface at the current horizontal speed (actor.js:443-446).
 		var n := ground_normal
 		velocity.y = -(velocity.x * n.x + velocity.z * n.z) / maxf(0.35, n.y)
+	var previous_position := global_position
+	var previous_normal := ground_normal
 	var previous_y := global_position.y
 	# move_and_slide() clears the vertical velocity when the body lands, so the impact
 	# speed has to be sampled before the move or _on_land() would always see zero.
 	var fall_speed := maxf(0.0, -velocity.y)
 	move_and_slide()
 	_resolve_ground(squid, previous_y, stick, fall_speed)
-	_try_step_up(axis, squid, stick)
+	if _step_blocked:
+		# A lifted capsule can clear a curb while the raised standing body would hit
+		# its ceiling. Restore the last safe feet instead of walking through the curb.
+		global_position = previous_position
+		ground_normal = previous_normal
+		grounded = was_grounded
+		velocity = Vector3.ZERO
+	_apply_spawn_barrier()
 	_face(delta, squid, axis, submerged)
 	_update_camera()
 	if auto_respawn and global_position.y < -5.0:
@@ -287,7 +327,7 @@ func update_intent(delta: float, fire: bool, squid_request: bool, weapon_busy: b
 
 	fire_buffer = float(player_config["fireBuffer"]) if fire_pressed else maxf(0.0, fire_buffer - delta)
 	var fire_wins := (fire or fire_buffer > 0.0) and _fire_press >= _squid_press
-	var want_squid := squid_request and not fire_wins and not weapon_busy
+	var want_squid := squid_request and not fire_wins and not weapon_busy and can_dive()
 	var was_squid := squid_form
 	update_form(want_squid)
 	if was_squid != squid_form and not squid_form:
@@ -298,6 +338,28 @@ func update_intent(delta: float, fire: bool, squid_request: bool, weapon_busy: b
 		fire_buffer = 0.0
 	else:
 		weapon_fire = false
+
+
+# Player-facing input requires own ink; low-level form changes remain available for respawn/tests.
+func can_dive() -> bool:
+	if ink == null:
+		return false
+	if climbing:
+		return true
+	if squid_form and not grounded:
+		return true # Keep the form through a jump, then re-evaluate at touchdown.
+	if grounded and _floor_ink_owner() == team:
+		return true
+	var axis := Vector2.ZERO
+	if Input.is_physical_key_pressed(KEY_A): axis.x -= 1.0
+	if Input.is_physical_key_pressed(KEY_D): axis.x += 1.0
+	if Input.is_physical_key_pressed(KEY_W): axis.y += 1.0
+	if Input.is_physical_key_pressed(KEY_S): axis.y -= 1.0
+	if axis.length_squared()<0.04:
+		axis = Vector2(0,1)
+	var relative := _camera_relative_axis(axis)
+	var direction := Vector3(relative.x,0.0,relative.y).normalized()
+	return _is_own_wall_hit(_wall_ray(global_position+Vector3.UP*0.3,direction,float(player_config["radius"])+0.35))
 
 
 func update_form(requested_squid: bool) -> bool:
@@ -311,34 +373,60 @@ func update_form(requested_squid: bool) -> bool:
 
 func _apply_form(squid: bool) -> void:
 	squid_form = squid
-	var height := float(player_config["squidHeight"]) if squid else float(player_config["height"])
+	form_changed.emit(squid)
+	collision_mask = (collision_mask & ~8) if squid else (collision_mask | 8)
 	$CollisionShape3D.shape = _squid_shape if squid else _kid_shape
-	$CollisionShape3D.position.y = height * 0.5
+	# Both bodies sit at the centre of their source span (kid 0.90, squid 0.54).
+	$CollisionShape3D.position.y = _body_center(squid)
 	$Body.call("set_form", squid)
 
 
 func _can_stand() -> bool:
 	var query := PhysicsShapeQueryParameters3D.new()
 	query.shape = _kid_shape
-	query.transform = Transform3D(global_transform.basis, global_position + global_transform.basis * Vector3.UP * float(player_config["height"]) * 0.5)
-	query.collision_mask = collision_mask
+	query.transform = Transform3D(global_transform.basis,
+		global_position + global_transform.basis * Vector3.UP * _body_center(false))
+	query.collision_mask = collision_mask | 8 # Standing must include grates even while currently a squid.
 	query.exclude = [get_rid()]
 	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
 
 
-func _make_squid_shape() -> ConvexPolygonShape3D:
-	var shape := ConvexPolygonShape3D.new()
-	var points := PackedVector3Array()
-	var radius := float(player_config["radius"]) / cos(PI / float(SQUID_SIDES))
-	var half_height := float(player_config["squidHeight"]) * 0.5
-	for i in range(SQUID_SIDES):
-		var angle := TAU * float(i) / float(SQUID_SIDES)
-		var x := cos(angle) * radius
-		var z := sin(angle) * radius
-		points.append(Vector3(x, -half_height, z))
-		points.append(Vector3(x, half_height, z))
-	shape.points = points
+# physics.js:201 states the whole body rule in one line:
+#   bot = lift + radius, top = max(bot, height - radius)
+# The capsule axis runs from `lift + radius` to `top` above the feet, so everything
+# below `lift` belongs to the feet rather than to the body. That is what makes curbs and
+# lips the ground probe's business instead of a wall the body walks into.
+#
+#   kid:   lift = stepUp (0.35), height = 1.45 -> axis 0.73 .. 1.07, solid 0.35 .. 1.45
+#   squid: lift = squidBodyLift (0.16), height = 0.55 -> axis degenerates to a point at
+#          0.54, i.e. a sphere of PLAYER.radius with solid extent 0.16 .. 0.92
+#
+# The kid body used to rest on the ground (0 .. 1.45). That was the DS-01 deviation
+# which needed an ahead probe to fake step-up; lifting it is what makes the source's own
+# mechanism work: the lifted body never hits the curb, so the footprint ring reaches the
+# lip and pops the feet up, and a fall can catch a ledge the feet are already under
+# (ledgeAssist). Both bodies are now built from config here.
+func _body_span(squid: bool) -> Vector2:
+	var radius := float(player_config["radius"])
+	var lift := float(player_config["squidBodyLift"]) if squid else float(player_config["stepUp"])
+	var height := float(player_config["squidHeight"]) if squid else float(player_config["height"])
+	var bottom := lift + radius
+	return Vector2(bottom, maxf(bottom, height - radius))
+
+
+func _make_body_shape(squid: bool) -> CapsuleShape3D:
+	var radius := float(player_config["radius"])
+	var span := _body_span(squid)
+	var shape := CapsuleShape3D.new()
+	shape.radius = radius
+	shape.height = (span.y - span.x) + 2.0 * radius
 	return shape
+
+
+# Centre of a body shape above the feet, from the same span.
+func _body_center(squid: bool) -> float:
+	var span := _body_span(squid)
+	return (span.x + span.y) * 0.5
 
 
 func _advance_jump_input(delta: float) -> void:
@@ -351,8 +439,9 @@ func _advance_jump_input(delta: float) -> void:
 func _vertical_step(delta: float, squid: bool, grounded: bool, submerged: bool = false,
 		on_enemy: bool = false) -> bool:
 	coyote = float(player_config["coyoteTime"]) if grounded else maxf(0.0, coyote - delta)
-	var jumped := jump_buffer > 0.0 and (grounded or coyote > 0.0)
-	if jumped:
+	var did_jump := jump_buffer > 0.0 and (grounded or coyote > 0.0)
+	if did_jump:
+		jumped.emit()
 		var jump := float(player_config["swimJumpVel"]) if submerged else float(player_config["jumpVel"])
 		velocity.y = jump * 0.72 if on_enemy else jump
 		jump_buffer = 0.0
@@ -366,13 +455,14 @@ func _vertical_step(delta: float, squid: bool, grounded: bool, submerged: bool =
 	if absf(velocity.y) < float(player_config["apexBand"]):
 		gravity *= float(player_config["apexGravityMul"])
 	velocity.y = maxf(-float(player_config["maxFall"]), velocity.y - gravity * delta)
-	return jumped
+	return did_jump
 
 
 # Port of actor.js _horizontal. This changes horizontal velocity only; collision
 # and grounding continue to be resolved by CharacterBody3D.
 func _horizontal_step(delta: float, axis: Vector2, squid: bool, on_enemy: bool, grounded: bool) -> void:
-	var p := player_config
+	var p := player_config.duplicate()
+	for key in ["runSpeed","swimSpeed","squidDrySpeed","enemyInkSpeed"]:p[key]*=external_speed_factor
 	var horizontal := Vector2(velocity.x, velocity.z)
 	var speed := horizontal.length()
 	var input_length := axis.length()
@@ -538,7 +628,7 @@ func _is_own_wall_hit(hit: Dictionary) -> bool:
 	if face.is_empty() or not bool(face["wall"]):
 		return false
 	var relative: Vector3 = hit["position"] - _vector(face["origin"])
-	return int(ink.call("owner_at", int(face["id"]), relative.dot(_vector(face["u"])), relative.dot(_vector(face["v"])))) == 0
+	return int(ink.call("owner_at", int(face["id"]), relative.dot(_vector(face["u"])), relative.dot(_vector(face["v"])))) == team
 
 
 func _set_climbing(on: bool) -> void:
@@ -556,6 +646,12 @@ func _set_climbing(on: bool) -> void:
 # wins when it sits at least STEP_MIN above the centre — that is what steps a curb up
 # as soon as the foot reaches it — or when the centre is over a gap, which keeps the
 # feet planted until the whole footprint has left the ledge.
+#
+# Because both bodies are lifted out of the ground (see _body_span), this ring is the
+# only step-up mechanism: the body no longer collides with a curb, so the walker keeps
+# advancing until a footprint sample reaches the lip, and the ring then raises the feet.
+# The port previously needed an extra "probe ahead of the body" step because its kid
+# capsule rested on the ground and was blocked by every lip; that helper is gone.
 func _ground_probe(up: float, down: float) -> Dictionary:
 	var length := up + down
 	var center_y := -INF
@@ -578,36 +674,6 @@ func _ground_probe(up: float, down: float) -> Dictionary:
 	if best.is_empty():
 		return {}
 	return {"y": float(best["position"].y), "normal": best["normal"]}
-
-
-# The source lifts the character's body capsule by stepUp, which is why a curb never
-# blocks it and the foot ring can pull the feet up. Godot's capsule must keep touching
-# the ground here (is_on_floor() still drives the play controller and the weapons), so
-# the same outcome is produced by probing just ahead of the body: a walkable surface
-# within stepUp of the feet raises them before the next move, and the capsule then
-# passes over the curb instead of being stopped by it.
-#
-# Known difference from the source: the lift fires at body radius + 5 cm from the face
-# instead of at the 0.24 m footprint, so the character rises slightly earlier than the
-# web build. Lifting the collision shape instead would match exactly but would break
-# is_on_floor() for the modules that still read it.
-func _try_step_up(axis: Vector2, squid: bool, stick: bool) -> void:
-	if not stick or climbing or axis.length_squared() < 0.01:
-		return
-	var limit := float(player_config["squidStepUp"]) if squid else step_height
-	var direction := Vector3(axis.x, 0.0, axis.y).normalized()
-	var from := global_position + direction * (float(player_config["radius"]) + 0.05) + Vector3.UP * (limit + 0.02)
-	var hit := get_world_3d().direct_space_state.intersect_ray(
-		PhysicsRayQueryParameters3D.create(from, from - Vector3.UP * (limit + 0.04), collision_mask))
-	if hit.is_empty() or float(hit["normal"].y) < WALKABLE:
-		return
-	var rise := float(hit["position"].y) - global_position.y
-	if rise <= 0.02 or rise > limit + 0.01:
-		return
-	global_position.y = float(hit["position"].y)
-	ground_normal = hit["normal"]
-	grounded = true
-	velocity.y = 0.0
 
 
 # actor.js:781-815 _face. The body yaw is a spring towards a target chosen by state:
@@ -661,20 +727,66 @@ func _face(delta: float, squid: bool, axis: Vector2, submerged: bool) -> void:
 	_face_target = target
 	_has_face_target = target_valid
 
-	var acceleration := 0.0
-	if target_valid:
-		acceleration = omega * omega * _angle_difference(body_yaw, target) + 2.0 * omega * (target_rate - yaw_velocity)
-	else:
-		acceleration = -2.0 * omega * yaw_velocity
-	yaw_velocity = clampf(yaw_velocity + clampf(acceleration, -max_acc, max_acc) * delta, -max_rate, max_rate)
-	if absf(yaw_velocity) < 1e-5:
-		yaw_velocity = 0.0
-	body_yaw = wrapf(body_yaw + yaw_velocity * delta, -PI, PI)
+	# aimFaceOmega=36 is unstable under one explicit 30 Hz spring step.
+	# Substeps keep the same source caps without frame-to-frame ringing.
+	var steps := maxi(1,ceili(delta*120.0))
+	var step := delta/steps
+	for i in range(steps):
+		var acceleration := omega*omega*_angle_difference(body_yaw,target)+2.0*omega*(target_rate-yaw_velocity) if target_valid else -2.0*omega*yaw_velocity
+		yaw_velocity = clampf(yaw_velocity+clampf(acceleration,-max_acc,max_acc)*step,-max_rate,max_rate)
+		if absf(yaw_velocity)<1e-5:
+			yaw_velocity=0.0
+		body_yaw=wrapf(body_yaw+yaw_velocity*step,-PI,PI)
 	$Body.rotation.y = body_yaw
 
 
 static func _angle_difference(from_angle: float, to_angle: float) -> float:
 	return wrapf(to_angle - from_angle, -PI, PI)
+
+
+# actor.js:522-533. Any actor inside the *enemy* spawn radius is pushed out to exactly
+# that radius, and velocity still heading inward is reflected with a 1.6 factor. The
+# source skips the check below `pad.y - 1.0` so a character falling past the pad is not
+# shoved sideways.
+#
+# Two deliberate differences from the source, both recorded rather than hidden:
+#   * the source divides by `d` without guarding d == 0, which yields a NaN (and in
+#     practice a huge offset) for an actor exactly on the pad centre; a small epsilon
+#     pushes it out along +X instead.
+#   * the source applies this to every actor. Here it applies to the local player only,
+#     because the blue team is a kinematic placeholder whose script belongs to another
+#     workstream this round. The half that matters for gameplay — a player may not camp
+#     the enemy spawn — is covered; the bot can still wander into the player's spawn.
+func _apply_spawn_barrier() -> void:
+	if spawn_barrier <= 0.0 or _spawn_pads.size() < 2:
+		return
+	var pad: Vector3 = _spawn_pads[clampi(1 - team, 0, _spawn_pads.size() - 1)]
+	if global_position.y <= pad.y - 1.0:
+		return
+	var offset := Vector2(global_position.x - pad.x, global_position.z - pad.z)
+	var distance := offset.length()
+	if distance >= spawn_barrier:
+		return
+	var direction := offset / distance if distance > 0.01 else Vector2(1.0, 0.0)
+	global_position.x = pad.x + direction.x * spawn_barrier
+	global_position.z = pad.z + direction.y * spawn_barrier
+	var inward := velocity.x * direction.x + velocity.z * direction.y
+	if inward < 0.0:
+		velocity.x -= direction.x * inward * 1.6
+		velocity.z -= direction.y * inward * 1.6
+
+
+# The radius lives in the map export. The walker reads it directly instead of asking
+# tidewater_map.gd, which carries another workstream's uncommitted changes this round.
+func _load_spawn_barrier() -> void:
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://assets/maps/%s.json" % preload("res://match_setup.gd").map_id))
+	if not parsed is Dictionary or not (parsed as Dictionary).has("spawnBarrier"):
+		push_warning("tidewater map has no spawnBarrier field; the spawn barrier is disabled")
+		return
+	spawn_barrier = float((parsed as Dictionary)["spawnBarrier"])
+	var map := get_parent().get_node_or_null("Map")
+	if map != null and map.get("spawn_pads") != null:
+		_spawn_pads = map.get("spawn_pads")
 
 
 func _probe_ray(base: Vector3, up: float, length: float) -> Dictionary:
@@ -688,10 +800,16 @@ func _probe_ray(base: Vector3, up: float, length: float) -> Dictionary:
 # below; otherwise this is a landing, searched upwards from the highest point the
 # frame passed through plus ledgeAssist, which is what lets a fall land on a ledge.
 func _resolve_ground(squid: bool, previous_y: float, stick: bool, fall_speed: float = 0.0) -> void:
+	_step_blocked = false
 	var landed := false
 	if stick:
-		var probe := _ground_probe(float(player_config["squidStepUp"]) if squid else step_height, step_down)
-		if not probe.is_empty():
+		# A hair more than the source's stepUp: a ray that ends exactly on a lip top is
+		# not reliably inclusive, and a curb of exactly stepUp must still be climbable.
+		var reach := (float(player_config["squidStepUp"]) if squid else step_height) + STEP_EPSILON
+		var probe := _ground_probe(reach, step_down)
+		if not probe.is_empty() and float(probe["y"]) > global_position.y + 0.02 and not _body_fits_at(Vector3(global_position.x,float(probe["y"]),global_position.z)):
+			_step_blocked = true
+		if not probe.is_empty() and _body_fits_at(Vector3(global_position.x,float(probe["y"]),global_position.z)):
 			global_position.y = float(probe["y"])
 			ground_normal = probe["normal"]
 			landed = true
@@ -701,7 +819,7 @@ func _resolve_ground(squid: bool, previous_y: float, stick: bool, fall_speed: fl
 		var probe := _ground_probe((top - global_position.y) + assist, 0.02)
 		if not probe.is_empty():
 			var probe_y := float(probe["y"])
-			if probe_y >= global_position.y - 0.02 and (velocity.y <= 0.0 or probe_y - global_position.y < 0.02):
+			if probe_y >= global_position.y - 0.02 and (velocity.y <= 0.0 or probe_y - global_position.y < 0.02) and _body_fits_at(Vector3(global_position.x,probe_y,global_position.z)):
 				global_position.y = probe_y
 				ground_normal = probe["normal"]
 				landed = true
@@ -763,3 +881,19 @@ func _floor_ink_owner() -> int:
 
 static func _vector(values: Array) -> Vector3:
 	return Vector3(float(values[0]), float(values[1]), float(values[2]))
+
+
+func _enter_tree() -> void:
+	var body := get_node_or_null("Body")
+	if body != null:
+		body.set("style_index", preload("res://match_setup.gd").style_index)
+		body.set("ornament_seed", preload("res://match_setup.gd").appearance_seed)
+
+
+func _body_fits_at(feet: Vector3) -> bool:
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = $CollisionShape3D.shape
+	query.transform = Transform3D(global_transform.basis, feet + Vector3.UP * _body_center(squid_form))
+	query.collision_mask = collision_mask
+	query.exclude = [get_rid()]
+	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()

@@ -4,6 +4,7 @@ const Settings = preload("res://tidewater_settings.gd")
 
 
 func _initialize() -> void:
+	preload("res://match_setup.gd").team_size = 1
 	call_deferred("_check")
 
 

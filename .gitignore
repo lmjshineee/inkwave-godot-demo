@@ -2,3 +2,7 @@
 *.log
 godot-port-prototype/.godot/
 godot-port-prototype/build/
+
+__pycache__/
+.env
+.env.*

@@ -25,6 +25,8 @@ var walker: CharacterBody3D
 
 
 func _initialize() -> void:
+	# Historical fixture timings are measured at 60 Hz; match runtime is 30 Hz.
+	Engine.physics_ticks_per_second = 60
 	call_deferred("_check")
 
 
@@ -111,9 +113,43 @@ func _check() -> void:
 		_fail("walker did not start falling off the ledge: " + _pos())
 		return
 
-	print("PASS: stepUp 0.35 m curb, stepDown off the edge, ledge footprint support; %.2f m face not climbable" % LEDGE_TOP)
+	# --- 4. ledgeAssist: a fall catches a ledge the feet are already under -------------
+	# actor.js:486-495 searches up from the highest point the frame passed through plus
+	# ledgeAssist (0.35), so feet up to that far below a ledge top still land on it. This
+	# only became reachable once the kid body was lifted (see _body_span): while the body
+	# rested on the ground its capsule hit the ledge side first, the engine pushed the
+	# walker clear and the 0.24 m footprint ended up past the edge.
+	#
+	# On the threshold: stepUp and ledgeAssist are both 0.35 for the kid, so the drop at
+	# which the body starts overlapping the ledge is exactly the drop at which ledgeAssist
+	# stops reaching. A clean "just beyond ledgeAssist" case cannot be built at a flat
+	# ledge; what is pinned below is the reachable case and the footprint-reach case.
+	var assist := float((walker.get("player_config") as Dictionary)["ledgeAssist"])
+	if absf(assist - 0.35) > 0.001:
+		_fail("ledgeAssist changed: %.3f" % assist)
+		return
+	await _drop_beside_ledge(LEDGE_Z.y + 0.10, assist - 0.05)
+	if not bool(walker.get("grounded")) \
+			or absf(walker.global_position.y - (FLOOR_Y + LEDGE_TOP)) > 0.05:
+		_fail("fall %.2f m below the ledge did not land on it: %s (grounded=%s)" % [
+			assist - 0.05, _pos(), str(walker.get("grounded"))])
+		return
+	await _drop_beside_ledge(LEDGE_Z.y + 1.0, assist - 0.05)
+	if bool(walker.get("grounded")) or walker.global_position.y > FLOOR_Y + LEDGE_TOP - 0.1:
+		_fail("fall landed on a ledge the footprint could not reach: " + _pos())
+		return
+
+	print("PASS: stepUp 0.35 m curb, stepDown off the edge, ledge footprint support, "
+		+ "%.2f m face not climbable, ledgeAssist %.2f m reach" % [LEDGE_TOP, assist])
 	quit()
 
+
+# Drops the walker from `drop` metres below the ledge top, offset `z_offset` past the
+# edge, with no input, and lets a few frames resolve the landing.
+func _drop_beside_ledge(z_offset: float, drop: float) -> void:
+	_place(Vector3(0.0, FLOOR_Y + LEDGE_TOP - drop, z_offset))
+	walker.velocity = Vector3(0.0, -1.0, 0.0)
+	await _frames(3)
 
 # Isolated flat arena: floor slab, a 0.35 m curb and a 0.9 m ledge.
 func _build_arena(parent: Node3D) -> void:

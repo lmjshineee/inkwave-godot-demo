@@ -4,7 +4,7 @@
 # 依次执行：
 #   1. 素材导入（仅在 assets/ 比上次戳记更新时）
 #   2. 每个导出器的 --check（需要 node；只读，不写生成物）
-#   3. tools/check_*.gd 的每个无界面规则短测
+#   3. 解析预检（失败立即停止），再执行其余无界面规则短测
 #
 # 用法：
 #   tools/run_checks.sh
@@ -36,7 +36,7 @@ if [ -z "$NODE" ] && command -v node >/dev/null 2>&1; then
   NODE=$(command -v node)
 fi
 if [ -z "$NODE" ] || ! command -v "$NODE" >/dev/null 2>&1; then
-  printf '%s\n' '未找到 Node；四个导出器检查必需。请设置 NODE=/path/to/node。' >&2
+  printf '%s\n' '未找到 Node；五个导出器检查必需。请设置 NODE=/path/to/node。' >&2
   exit 2
 fi
 
@@ -58,18 +58,24 @@ failed=0
 passed=0
 
 # --- 2. 导出器 --check ---------------------------------------------------------
-EXPORTERS="export_tidewater_map export_tidewater_surfaces export_weapon_config export_ui_icons"
+EXPORTERS="export_tidewater_map export_tidewater_surfaces export_weapon_config export_ui_icons export_tidewater_visuals export_navigation export_minimap export_characters export_weapon_poses export_character_actions export_character_materials export_audio check_character_anatomy export_menu_art export_arenas"
 for name in $EXPORTERS; do
-    output=$("$NODE" "$HERE/tools/$name.mjs" --check 2>&1)
+    variants="default"
+    case "$name" in export_tidewater_map|export_tidewater_surfaces|export_tidewater_visuals) variants="default kelpline" ;; esac
+    for variant in $variants; do
+    map_flag=""
+    [ "$variant" = kelpline ] && map_flag="--kelpline"
+    output=$("$NODE" "$HERE/tools/$name.mjs" --check $map_flag 2>&1)
     status=$?
     if [ "$status" -eq 0 ]; then
-      printf 'PASS  %-28s --check\n' "$name"
+      printf 'PASS  %-28s --check %s\n' "$name" "$variant"
       passed=$((passed + 1))
     else
       printf 'FAIL  %-28s --check (exit=%s)\n' "$name" "$status"
       printf '%s\n' "$output" | grep -vE 'Reparsing|MODULE_TYPELESS|trace-warnings' | tail -6 | sed 's/^/      /'
       failed=$((failed + 1))
     fi
+    done
 done
 
 printf '\n'
@@ -99,7 +105,8 @@ run_limited() {
   wait "$limited_pid"
 }
 
-for path in "$HERE"/tools/check_*.gd; do
+run_check() {
+  path=$1
   name=$(basename "$path" .gd)
   log="$HERE/.godot/$name.log"
   run_limited "$GODOT" --headless --log-file "$HERE/.godot/$name.engine.log" --path "$HERE" --script "res://tools/$name.gd" >"$log" 2>&1
@@ -108,6 +115,7 @@ for path in "$HERE"/tools/check_*.gd; do
   if [ "$status" -eq 0 ] && grep -q '^PASS:' "$log" && [ -z "$problems" ]; then
     printf 'PASS  %s\n' "$name"
     passed=$((passed + 1))
+    return 0
   else
     if [ "$status" -eq 124 ]; then
       printf 'FAIL  %s (exceeded %ss and was killed)\n' "$name" "$CHECK_TIMEOUT"
@@ -121,7 +129,21 @@ for path in "$HERE"/tools/check_*.gd; do
       tail -4 "$log" | sed 's/^/      /'
     fi
     failed=$((failed + 1))
+    return 1
   fi
+}
+
+# Run this explicitly first: glob order otherwise starts dependent scene checks
+# before the parse gate. A failed gate must never launch the remaining scenes.
+if ! run_check "$HERE/tools/check_scripts_parse.gd"; then
+  printf '\n解析预检失败，停止后续规则短测。通过 %d，失败 %d\n' "$passed" "$failed"
+  printf '日志保留在 %s/*.log\n' "$HERE/.godot"
+  exit 1
+fi
+
+for path in "$HERE"/tools/check_*.gd; do
+  [ "$(basename "$path")" = check_scripts_parse.gd ] && continue
+  run_check "$path"
 done
 
 printf '\n%s\n' "----------------------------------------"
